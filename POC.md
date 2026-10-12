@@ -1,6 +1,6 @@
 # Laundry RFID POC
 
-Version: 0.1.6
+Version: 0.2.0
 
 One building. The site owns the linen. One RFID tag is one cloth. The Chainway C72 only returns a tag id. The apps store the name, the item number, and the wash count.
 
