@@ -1,18 +1,18 @@
-# Backend API Implementation Plan
+# Backend API Implementation Plan (Laravel)
 
-Version: 0.2.0
+Version: 0.3.0
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the PHP JSON API under `/api/v1` that holds every rule of the Proti mat tracking POC: login, roles, mat lifecycle, handovers, contracts, tasks and proof files.
+**Goal:** Build the JSON API under `/api/v1` that holds every rule of the Proti mat tracking POC, as a Laravel application: login, roles, mat lifecycle, handovers, contracts, tasks and proof files.
 
-**Architecture:** Plain PHP 8.3+ with PDO, no framework and no runtime dependency, so it runs on TransIP web hosting as uploaded files. One route table maps method and path to a handler function; `dispatch()` checks login, CSRF token and role before any handler runs. Every status change is a conditional `UPDATE ... WHERE status = <old status>` inside a transaction plus one `item_events` row, which is what makes every scan safe to send twice.
+**Architecture:** One Laravel 13 application in `site/`, with `site/public/` as the web root. Laravel does the plumbing: routing, login session, CSRF check, login throttle, input validation, file storage, the command line and the test runner. This plan writes only the rules: thin controllers that run plain SQL through Laravel's `DB` facade. Every status change is a conditional `UPDATE ... WHERE status = <old status>` inside `DB::transaction()` plus one `item_events` row, which is what makes every scan safe to send twice. Every setting that differs per machine comes from `.env`; nothing is hardcoded.
 
-**Tech Stack:** PHP 8.3+ (8.4.19 on the dev machine), PDO MySQL, MariaDB or MySQL, PHPUnit 11 (dev only), Composer (dev only).
+**Tech Stack:** PHP 8.3+ (8.4.19 on the dev machine), Laravel 13, Laravel Sanctum (session cookie for the web app now, tokens for the handheld later), MariaDB or MySQL at TransIP, PHPUnit 12 through `php artisan test`, Composer.
 
 **Spec:** [ARCHITECTURE.md](../../../ARCHITECTURE.md), with [POC.md](../../../POC.md), [FEATURES.md](../../../FEATURES.md), [FLOW.md](../../../FLOW.md) and [db/schema.sql](../../../db/schema.sql).
 
-**Checked:** every code block in this plan was put together in a scratch copy and run on PHP 8.4.19 with MariaDB 11.4.13. All 167 tests pass, twice in a row and each test file on its own, and the web entry point was tried with curl: login, CSRF token, closing a stop with an uploaded photo and signature, fetching the photo back. A step that fails during execution therefore points at a typing slip or a difference in the machine, not at the plan's logic. Not checked: Apache with `.htaccess` and `.user.ini`, and the database TransIP actually runs. Its engine and version are still unknown; the schema and this code are written for both MySQL 8.0.16+ and MariaDB 10.4+.
+**Checked, and not checked:** this plan is a rewrite of the plain-PHP plan (commit `ca51bb5`, still in git as the fallback). The **rules and the test cases** come from that plan, where all 167 tests passed on PHP 8.4.19 with MariaDB 11.4.13. The **Laravel code in this plan has not been run.** Facts about the framework (Laravel 13.35 skeleton, what `php artisan install:api` creates, the file layout, the default settings) were looked up in a throwaway install; the controllers, the middleware and the test harness were written from that, not executed. So a step that fails during execution may be a mistake in this plan's Laravel plumbing. Fix the code, never a test's assertion: the assertions are the checked part.
 
 ## Scope
 
@@ -24,7 +24,7 @@ This is plan 1 of 3. The whole build is too big for one plan, and the frontend m
 | 2. Office console | React `/office` area against the contract from plan 1 | To write after plan 1 is built |
 | 3. Scanner simulator | React `/scanner` area with the pile panel | To write after plan 1 is built |
 
-The database is already designed (`db/schema.sql`, 13 tables). This plan changes no table and no column.
+The database is already designed (`db/schema.sql`, 13 tables). This plan changes no table and no column of those 13. Laravel adds two small tables of its own: `migrations` (which migrations ran) and `personal_access_tokens` (empty until the handheld gets token login).
 
 ## Changes to the spec decided while planning
 
@@ -34,62 +34,102 @@ Where this section and the documents disagree, this section wins. Task 14 brings
 |---|---|---|---|
 | 1 | When a wash is counted | At the washing house manager's scan when he **receives** used mats (Handover B) | At the washing house manager's scan **after washing**, when he scans the washed mats out (Handover C). That scan is required. It confirms the mats are ready to use, moves the wash dates and adds 1 to the wash count. Receiving in Handover B counts nothing. A rewash is counted the same way, when the mat leaves washing |
 | 2 | Time zone of stored times | UTC | Stays UTC, now with the reason written down: Dutch time repeats one hour every autumn, so two scans in that night could not be put in order, and a named time zone needs tables a shared database often lacks. Every screen shows Dutch time. Calendar days (due dates, wash dates) are Dutch days already |
+| 3 | What the backend is built with | Plain PHP files, no framework | Laravel 13 with Sanctum. The security plumbing (login, session, CSRF, throttle, validation, uploads) is the framework's, kept up to date by its maintainers, and token login for the handheld is already there. The rules, the database and the API paths stay the same |
+
+## What Laravel replaces, and what stays
+
+| The plain-PHP plan wrote by hand | Now |
+|---|---|
+| Router and role check (`kernel.php`, `routes.php`) | `site/routes/api.php` and one small middleware, `role` |
+| Login, session, CSRF token (`auth.php`, `index.php`) | Sanctum in cookie mode and Laravel's session and forgery check |
+| Login throttle in files | Laravel's `RateLimiter` |
+| Input readers (`str_in`, `int_in`, ...) | Laravel validation rules |
+| Upload checks and proof storage | `UploadedFile` and the `Storage` disk `local` |
+| `bin/create-office-user.php` | The command `php artisan laundry:office-user` |
+| `cfg()` and `ENV_FILE` | Laravel's `.env`, and `.env.testing` for the tests |
+| Own test harness | `php artisan test` |
+| **The rules:** two-scan handover, wash count, closing a stop, contract activation, the next swap | **Unchanged.** Same SQL, same checks, same test cases |
 
 ## Prerequisites (human, once, before Task 1)
 
-No database is installed on the development machine. Development and tests use databases at TransIP. An agent cannot do these steps: they need the TransIP control panel, and a database password must never pass through an agent.
+No database is installed on the development machine. Development, tests and demo data all use databases at TransIP. An agent cannot do these steps: they need the TransIP control panel, and a database password must never pass through an agent.
+
+**First confirm three things in the TransIP control panel.** TransIP's own guide ([installing Laravel on a web hosting package](https://www.transip.eu/knowledgebase/installing-laravel-on-a-web-hosting-package)) says all three are there, but the package decides.
+
+1. The web root (DocumentRoot) of the site can be set to a subfolder. Laravel needs it to point at `site/public`.
+2. SSH access is on. Without it `composer` and `php artisan` cannot run on the server.
+3. PHP 8.3 or newer can be selected.
+
+If number 1 or 3 is not possible, stop: use the plain-PHP plan instead (commit `ca51bb5`), which was shaped for exactly that kind of hosting. If only number 2 is missing, stop and say so: the first office user and the database set-up then need another way.
+
+**Then set up the two databases.**
 
 1. In the TransIP control panel create **two** databases: one for the real data and one for the tests.
    The tests drop every table of their database at the start of every run. They must never share a database with real data.
 2. Switch on external access for the **test** database, so the tests can reach it from the development machine. Leave the real database reachable from the hosting only.
-3. On the development machine create the file `site/.env.test` (create the `site` folder if it is not there yet) with the details of the **test** database. Put the password in double quotes:
+3. On the development machine create the file `site/.env.testing` (create the `site` folder if it is not there yet) with the details of the **test** database. Put the password in double quotes, and leave `APP_KEY=` empty: Task 1 fills it in.
 
    ```ini
+   APP_NAME=Laundry
+   APP_ENV=testing
+   APP_KEY=
+   APP_DEBUG=true
+   APP_URL=http://127.0.0.1:8000
+   DB_CONNECTION=mysql
    DB_HOST=the host name TransIP shows for the test database
-   DB_NAME=the name of the test database
-   DB_USER=the user of the test database
-   DB_PASS="THE-PASSWORD"
-   APP_ENV=local
+   DB_PORT=3306
+   DB_DATABASE=the name of the test database
+   DB_USERNAME=the user of the test database
+   DB_PASSWORD="THE-PASSWORD"
    SCANNER_SIMULATOR=true
+   SESSION_DRIVER=file
+   SESSION_LIFETIME=720
+   SESSION_SECURE_COOKIE=false
+   CACHE_STORE=file
+   QUEUE_CONNECTION=sync
+   FILESYSTEM_DISK=local
    ```
 
-4. The file `site/.env`, with the details of the real database, is made on the server when the site is uploaded. It is not needed on the development machine.
+4. The file `site/.env`, with the details of the real database, is made on the server when the site is put there (see "Put it on TransIP" in Task 14). It is not needed on the development machine, and it must not exist there with the test database in it: the tests refuse to run when `.env` and `.env.testing` name the same database.
 
-Two things to confirm in the control panel before Task 1. If either is not possible, stop and say so: the tests then have no safe place to run, and the plan needs another answer first.
+Two more things to confirm in the control panel before Task 1. If either is not possible, stop and say so: the tests then have no safe place to run.
 
 - The hosting package allows a second database.
 - A database can be reached from outside the hosting.
 
-The tests read only `site/.env.test`. They refuse to start when that file is missing, or when it names the same database as `site/.env`. Because the test database is far away, a full test run takes minutes, not seconds.
+Because the test database is far away, a full test run takes a while. The tests rebuild the database once per run and roll every test back, which keeps the number of round trips low.
 
 ## Global Constraints
 
-- **PHP 8.3+**, `declare(strict_types=1);` in every PHP file. No runtime Composer package. PHPUnit `^11.5` is the only dev dependency.
-- **Database:** MySQL 8.0.16+ or MariaDB 10.4+. `db/schema.sql` and `db/seed.sql` are fixed. If a task seems to need a schema change, stop and report it; do not edit the schema. (Task 14 changes two comment lines in `db/schema.sql`, nothing else.)
-- **Folders:** `site/` is exactly what gets uploaded to TransIP. `site/www/` is the web root. `site/app/`, `site/bin/`, `site/storage/`, `site/.env` and `site/.env.test` are outside the web root. Tests, `composer.json` and `vendor/` live at the repository root and are never uploaded.
-- **SQL:** every query goes through `q($sql, $params)` with `?` placeholders. Only constants written in the code may be put into SQL text. No value from a request is ever pasted into a query.
-- **Status changes:** always `UPDATE items SET status = <new> ... WHERE id = ? AND status = <old>`, inside `tx()`, followed by one `log_event()` row. A second scan of the same mat must change nothing and write no second event.
-- **Roles:** exactly `office`, `inventory`, `driver`, `washing`, `outbound`.
+- **PHP 8.3+, Laravel 13.** `declare(strict_types=1);` in every PHP file this plan creates under `site/app`, `site/database`, `site/routes` and `site/tests`. Files that come with Laravel stay as they are unless a step replaces them.
+- **Packages:** only what `composer create-project laravel/laravel` and `php artisan install:api` bring. No other package.
+- **Nothing hardcoded per machine.** Database, site address, debug switch, simulator switch and cookie security come from `.env` through `config(...)`. Code never calls `env()` outside the `site/config` folder, so `php artisan config:cache` keeps working on the server.
+- **Database:** MySQL 8.0.16+ or MariaDB 10.4+. `db/schema.sql` and `db/seed.sql` are fixed. If a task seems to need a schema change, stop and report it; do not edit the schema. (Task 14 changes two comment lines in `db/schema.sql`, nothing else.) The one migration of this plan runs `db/schema.sql` as it is.
+- **Folders:** `site/` is the Laravel application. `site/public/` is the web root; nothing else is reachable from the web. `db/` stays at the repository root, next to `site/`: the migration and the seeder read `../db/*.sql`, so the server needs both folders.
+- **SQL:** every query goes through `rows()`, `row()`, `DB::scalar()`, `DB::select()`, `DB::insert()`, `DB::update()`, `DB::delete()` or the query builder, with `?` placeholders. Only constants written in the code may be put into SQL text. No value from a request is ever pasted into a query.
+- **Status changes:** always `DB::update('UPDATE items SET status = <new> ... WHERE id = ? AND status = <old>', ...)`, inside `DB::transaction()`, followed by one `Scan::log()` row. Never load a model, change it and save it: that loses the "where still old" check, and a second scan would count twice. A second scan of the same mat must change nothing and write no second event.
+- **Roles:** exactly `office`, `inventory`, `driver`, `washing`, `outbound` (`User::ROLES`).
 - **Scan source:** `simulator` or `c72` from scanners. The server writes `web` for office actions. `simulator` is refused when `SCANNER_SIMULATOR` is not `true`.
-- **Errors:** always `{"error": {"code": "...", "message": "..."}}` with status `401` not logged in, `403` wrong role, not yours, or bad CSRF token, `404` not found, `405` wrong method, `409` already done, closed, duplicate or wrong status, `422` input not valid, `429` too many login tries.
+- **Errors:** always `{"error": {"code": "...", "message": "..."}}` with status `401` not logged in, `403` wrong role, not yours, or failed forgery check, `404` not found, `405` wrong method, `409` already done, closed, duplicate or wrong status, `422` input not valid, `429` too many login tries. Code stops a request with `fail($status, $code, $message)`.
 - **Dates:** `DATETIME` columns are UTC and set with `UTC_TIMESTAMP()`. The API sends them as they are stored (`2026-10-12 21:03:11`, UTC); turning them into Dutch time is the screen's job. `DATE` columns (`due_date`, wash dates, contract dates) are calendar days in Europe/Amsterdam and set with `today()`.
-- **Wash count:** goes up only in `handover_move()` for `washing_to_inventory`, at the giver's scan. No other code touches `wash_count` or the wash dates.
+- **Wash count:** goes up only in `HandoverController::move()` for `washing_to_inventory`, at the giver's scan. No other code touches `wash_count` or the wash dates.
 - **Tag ids** (EPC, TID) are stored and compared as uppercase hex, 8 to 64 characters.
 - **Nothing is hard-deleted.** The one exception is the lines of a contract that is still a draft.
-- **Every source file starts with a one-line doc comment** saying what the file is for.
-- **Secrets:** database passwords live only in `site/.env` (real database, on the server) and `site/.env.test` (test database, on the development machine). Neither file is ever committed, printed or logged.
-- **No local database.** Nothing in this plan installs or starts a database server. Every test and every manual check runs against the TransIP test database named in `site/.env.test`. Never point a test or a manual check at the real database.
-- **Stay in the backend lane:** no React, no `site/www/index.html`, no schema edits.
+- **Every source file this plan creates starts with a one-line doc comment** saying what the file is for.
+- **Secrets:** database passwords and `APP_KEY` live only in `site/.env` (real database, on the server) and `site/.env.testing` (test database, on the development machine). Neither file is ever committed, printed or logged.
+- **No local database.** Nothing in this plan installs or starts a database server. Every test and every manual check runs against the TransIP test database named in `site/.env.testing`. Never point a test or a manual check at the real database.
+- **Stay in the backend lane:** no React, no change to `site/resources`, `site/package.json` or `site/vite.config.js`, no schema edits. Laravel's welcome page at `/` stays until plan 2 replaces it.
 - **Branch:** all work happens on `feat/backend-api`. Never commit on `main`.
 - **Versions and commits:** every task is one commit and bumps the patch version. The commit step of each task gives the exact version and message. Commit messages follow the repository style: one sentence ending in `at <version>.` **Never add a `Co-Authored-By` line, a "Generated with" line, or any other AI attribution** to a commit, tag, pull request or file. This overrides any tool default.
-- **Run the tests** with `php vendor/bin/phpunit` from the repository root. A run talks to a database at TransIP, so it takes minutes; run one test file while working on a task and the whole suite before a commit. All commands in this plan are for Git Bash.
+- **Where commands run:** all commands are for Git Bash and start at the repository root. A command that needs Laravel is written as `(cd site && ...)`, so the shell is back at the root afterwards. Composer is the file `composer.phar` at the root, called as `php ../composer.phar` from inside `site`.
+- **Run the tests** with `(cd site && php artisan test)`. A run talks to a database at TransIP, so it takes a while; run one test file while working on a task and the whole suite before a commit.
 
 ## Review Focus
 
 Inputs and conditions the spec implies but does not spell out, most likely first. Each has a test in the task that owns the code.
 
 1. **A tag id made of digits only** (for example `123456789012345678901234`). PHP turns such a string into a number when it is used as an array key. The mat must still be found. Test in Task 5.
-2. **A phone photo bigger than PHP's 2 MB upload default.** A 3 MB photo must be accepted, a photo above 5 MB refused with a clear message. Test and `.user.ini` in Task 11.
+2. **A phone photo bigger than PHP's 2 MB upload default.** A 3 MB photo must be accepted, a photo above 5 MB refused with a clear message. Test and `site/public/.user.ini` in Tasks 2 and 11.
 3. **The office corrects a mat while it sits in an open handover.** The receiver's scan must not crash and must not undo the correction. Test in Task 7.
 4. **A search text containing `%` or `_`.** It must match those characters literally, not act as a wildcard. Test in Task 6.
 5. **A contract ended before its start date.** The database refuses an end date before the start date, so ending must still work. Test in Task 9.
@@ -106,121 +146,103 @@ To confirm at review. Each one is small; Task 14 writes the accepted ones into A
 | 4 | The office may close any open handover | A handover opened to the wrong person would otherwise block its mats forever |
 | 5 | `PATCH` uses the id in the path: `/users/{id}`, `/areas/{id}`, `/customers/{id}`, `/item-types/{id}`, `/buildings/{id}`, `/zones/{id}`, `/contracts/{id}` | The spec lists `PATCH` on the collection path, which cannot name a row |
 | 6 | The lines and the start date of a contract can be changed only while it is a draft. n can be changed while it is active | Delivery tasks are created from the lines at activation |
-| 7 | Login throttle: 5 failed tries per minute per username and address, then `429`. Kept in small files under `site/storage/throttle/` | The schema has no table for it |
+| 7 | Login throttle: 5 failed tries per minute per username and address, then `429`. Counted by Laravel's `RateLimiter` in the cache (files under `site/storage`) | The schema has no table for it |
 | 8 | `GET /items/{id}` is open to the washing house manager, who sees the events without note, task and zone | ARCHITECTURE.md (uncommitted edit) gives washing the mat history; a lookup must not reveal the customer |
 | 9 | Closing a stop needs `signed_name` | A signature without a name proves little |
 | 10 | A collection task accepts no drops. A delivery task expects no pick-ups | Follows from what the task types mean |
 | 11 | Passwords have 10 to 72 characters. An office user cannot switch off or demote himself | Nobody may lock the last office user out |
-| 12 | Optional setting `STORAGE_DIR`, and the environment variable `ENV_FILE` that picks another settings file in `site/` | Lets the tests write proofs and throttle files to a temp folder, and use their own database through `site/.env.test` |
+| 12 | Sessions and the login throttle live in files under `site/storage/framework`, proofs under `site/storage/app/private/proofs` | No extra table and no extra service on shared hosting. `storage` is outside the web root |
 | 13 | Ending a contract sets the end date to today, or to the start date when today is earlier | The database refuses an end date before the start date |
 | 14 | Opening a handover that is already open between the same two people returns the open one | A retry on a bad connection must not create a second handover |
-| 15 | Photo at most 5 MB, signature at most 1 MB. `site/www/.user.ini` raises PHP's upload limit to 6 MB | The spec says "a size limit" without a number |
+| 15 | Photo at most 5 MB, signature at most 1 MB. `site/public/.user.ini` raises PHP's upload limit to 6 MB | The spec says "a size limit" without a number |
+| 16 | Forgery check: Laravel lets a changing request through when the browser marks it as same-origin (`Sec-Fetch-Site`), or when it carries the header `X-CSRF-Token` with the `csrf_token` from the login or from `GET /auth/me`. The web app sends the header on every changing request | Laravel 13's own check; the header keeps the contract of the plain-PHP plan and covers older browsers |
+| 17 | The session cookie only works for requests whose `Origin` or `Referer` is the site's own address (`APP_URL`, or `SANCTUM_STATEFUL_DOMAINS`) | This is how Sanctum tells the web app from a token client such as the handheld |
 
 ## File Structure
 
 ```
-composer.json                 dev dependency (PHPUnit) and the project version
-phpunit.xml                   test settings
+composer.phar                  Composer itself, downloaded in Task 1, not committed
 .gitignore
-site/
-  .env.example                the six settings, without a password
-  app/
-    bootstrap.php             cfg(), storage_dir(), loads every file below
-    db.php                    db(), q(), tx(), marks(), today(), days_after()
-    http.php                  Request, ApiError, FileOut, fail(), input readers
-    kernel.php                dispatch(), route(), error mapping
-    routes.php                the route table
-    auth.php                  login, logout, me, current_user(), login throttle
-    refdata.php               areas, customers, buildings, zones, item types
-    users.php                 user management
-    scan.php                  tag reads, item views, events, lookup, simulator list
-    items.php                 register, ready, quality check, correction, list, history
-    handovers.php             the five handover types
-    contracts.php             contracts, lines, activate, end
-    tasks.php                 task lists, assignment, closing a stop, proof files
-  bin/
-    create-office-user.php    one-time CLI for the first office user
-  www/
-    index.php                 web entry point
-    .htaccess                 HTTPS, /api/* to index.php
-    .user.ini                 upload limits
-tests/
-  bootstrap.php               picks site/.env.test, rebuilds the test database from db/schema.sql
-  ApiTestCase.php             fresh mock data per test, in-process API calls
-  *Test.php                   one file per task
+db/schema.sql, db/seed.sql     unchanged; read by the migration and the seeder
+site/                          the Laravel application (composer create-project)
+  .env.example                 every setting, without secrets
+  .env.testing                 test database (human, not committed)
+  composer.json                name, version, autoload of app/helpers.php
+  phpunit.xml                  test settings; the database comes from .env.testing
+  bootstrap/app.php            /api/v1 prefix, session for the web app, role middleware, the one error shape
+  config/database.php          UTC and the strict SQL mode on every connection
+  config/laundry.php           the simulator switch
+  routes/api.php               every API route with the roles that may call it
+  routes/console.php           the command laundry:office-user
+  app/helpers.php              rows(), row(), marks(), today(), days_after(), run_sql_file(), fail(), api_error()
+  app/Models/User.php          the user: roles, password column, what the API shows, register()
+  app/Support/Scan.php         tag reads, mat lookups, the mat as a scanner sees it, history rows
+  app/Http/Middleware/Role.php         active user and role check
+  app/Http/Middleware/ApiHeaders.php   nosniff, no-store, HSTS
+  app/Http/Controllers/
+    AuthController.php         login, logout, me
+    RefdataController.php      areas, customers, buildings, zones, mat types
+    UserController.php         user management
+    ScanController.php         lookup, simulator list
+    ItemController.php         register, ready, quality check, correction, list, history
+    HandoverController.php     the five handover types
+    ContractController.php     contracts, lines, activate, end
+    TaskController.php         task lists, assignment, closing a stop, proof files
+  database/migrations/         0001_01_01_000000_load_schema.php, Sanctum's token table
+  database/seeders/DatabaseSeeder.php   runs db/seed.sql
+  public/                      web root: index.php, .htaccess (HTTPS), .user.ini (upload limits)
+  tests/
+    TestCase.php               refuses to run without a test database of its own
+    TestSeeder.php             mock data plus six users
+    ApiTestCase.php            helpers to call the API and to look at the mats
+    Feature/*Test.php          one file per task
 ```
 
-One file per subject, functions only, no classes beyond the three small value classes in `http.php`. Handlers are plain functions named `<subject>_<action>` that take `(Request $req, array $user, int ...$ids)` and return an array.
+One controller per subject. A controller method validates its input, runs its SQL in a transaction and returns an array, which Laravel sends as JSON. Rows are plain arrays (`rows()` and `row()`), not Eloquent models; the one model is `User`, because the login needs it.
 
 ---
 
-### Task 1: Project skeleton and database test harness
+### Task 1: Laravel application and database test harness
 
 **Files:**
-- Create: `.gitignore`, `composer.json`, `phpunit.xml`, `site/.env.example`
-- Create: `site/app/bootstrap.php`, `site/app/db.php`
-- Create: `tests/bootstrap.php`, `tests/ApiTestCase.php`
-- Test: `tests/DbTest.php`
+- Create: `.gitignore`, `composer.phar` (downloaded, not committed)
+- Create: `site/` with `composer create-project`, then `php artisan install:api`
+- Replace: `site/.env.example`, `site/phpunit.xml`, `site/tests/TestCase.php`, `site/database/seeders/DatabaseSeeder.php`
+- Create: `site/config/laundry.php`, `site/app/helpers.php`, `site/database/migrations/0001_01_01_000000_load_schema.php`
+- Create: `site/tests/TestSeeder.php`, `site/tests/ApiTestCase.php`
+- Modify: `site/config/database.php` (three lines), `site/composer.json` (name, version, autoload), `site/.gitignore` (one line)
+- Test: `site/tests/Feature/DbTest.php`
 - Modify: `README.md:16` (version badge)
 
 **Interfaces:**
-- Consumes: `db/schema.sql`, `db/seed.sql`, `site/.env.test` (made by the human, see Prerequisites).
+- Consumes: `db/schema.sql`, `db/seed.sql`, `site/.env.testing` (made by the human, see Prerequisites).
 - Produces:
-  - `cfg(string $key, ?string $default = null): ?string` — the process environment wins, then the settings file (`site/.env`, or the file in `site/` that the environment variable `ENV_FILE` names), then the default
-  - `storage_dir(): string`
-  - `db(): PDO`
-  - `q(string $sql, array $params = []): PDOStatement` — positional `?` only; binds int as int, null as null
-  - `tx(callable $fn): mixed` — commit on return, roll back on any throw
+  - `rows(string $sql, array $params = []): array` — every row as an array; positional `?` only
+  - `row(string $sql, array $params = []): ?array` — the first row, or null
   - `marks(array $xs): string` — `?,?,?` for an `IN (...)` list
   - `today(): string` — `Y-m-d` in Europe/Amsterdam
   - `days_after(string $date, int $days): string`
-  - Test base class `ApiTestCase` with `$this->users` (`office`, `inventory`, `driver`, `driver2`, `washing`, `outbound` → id), `PASSWORD`, `api()`, `loginAs()`, `ok()`, `assertError()`, `epc()`, `reads()`, `item()`, `setItems()`, `events()`
+  - `run_sql_file(string $path): void`
+  - `fail(int $status, string $code, string $message): never` — stops the request with the one error shape
+  - `api_error(Throwable $e): Response` — turns any exception into the one error shape; wired up in Task 2
+  - `config('laundry.simulator'): bool`
+  - Laravel's own: `DB::transaction(callable)`, `DB::scalar($sql, $params)`, `DB::insert()`, `DB::update()` (returns the number of changed rows), `DB::getPdo()->lastInsertId()`
+  - Test base class `Tests\ApiTestCase` with `$this->users` (`office`, `inventory`, `driver`, `driver2`, `washing`, `outbound` → id), `PASSWORD`, `api()`, `loginAs()`, `logout()`, `ok()`, `assertError()`, `epc()`, `reads()`, `item()`, `setItems()`, `events()`
 
 - [ ] **Step 1: Check the prerequisites**
 
 Run:
 
 ```bash
-test -f site/.env.test && echo "env ok" || echo "site/.env.test missing"
-php -r '$c = parse_ini_file("site/.env.test", false, INI_SCANNER_RAW); $p = new PDO("mysql:host={$c["DB_HOST"]};dbname={$c["DB_NAME"]}", $c["DB_USER"], $c["DB_PASS"]); echo "database ok: ", $p->query("SELECT VERSION()")->fetchColumn(), PHP_EOL;'
+test -f site/.env.testing && echo "env ok" || echo "site/.env.testing missing"
+php -r '$c = parse_ini_file("site/.env.testing", false, INI_SCANNER_RAW); $p = new PDO("mysql:host={$c["DB_HOST"]};port={$c["DB_PORT"]};dbname={$c["DB_DATABASE"]}", $c["DB_USERNAME"], $c["DB_PASSWORD"]); echo "database ok: ", $p->query("SELECT VERSION()")->fetchColumn(), PHP_EOL;'
 ```
 
-Expected: `env ok` and `database ok:` followed by the version of the TransIP database. Write that version into the task report: it answers the open question in ARCHITECTURE.md. If either check fails, stop and report BLOCKED with the exact output: the Prerequisites section is not done, or external access is off. Do not print the content of `site/.env.test`, and do not try to install a database locally instead.
+Expected: `env ok` and `database ok:` followed by the version of the TransIP database. Write that version into the task report: it answers the open question in ARCHITECTURE.md. If either check fails, stop and report BLOCKED with the exact output: the Prerequisites section is not done, or external access is off. Do not print the content of `site/.env.testing`, and do not try to install a database locally instead.
 
-- [ ] **Step 2: Install Composer locally and PHPUnit**
+- [ ] **Step 2: Install Composer locally and create the Laravel application**
 
-Create `composer.json`:
-
-```json
-{
-    "name": "proti/laundry-poc",
-    "description": "Proti mat tracking POC: PHP API",
-    "version": "0.4.0",
-    "type": "project",
-    "require": {
-        "php": ">=8.3",
-        "ext-pdo_mysql": "*",
-        "ext-fileinfo": "*",
-        "ext-mbstring": "*"
-    },
-    "require-dev": {
-        "ext-gd": "*",
-        "phpunit/phpunit": "^11.5"
-    }
-}
-```
-
-Create `.gitignore`:
-
-```
-/vendor/
-/composer.phar
-/.phpunit.cache/
-/site/.env
-/site/.env.test
-/site/storage/
-/.superpowers/
-```
+`composer create-project` needs an empty target folder, so the settings file steps aside for a moment.
 
 Run:
 
@@ -229,147 +251,219 @@ php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
 php -r "if (hash_file('sha384', 'composer-setup.php') === trim(file_get_contents('https://composer.github.io/installer.sig'))) { echo 'Installer verified', PHP_EOL; } else { echo 'Installer corrupt', PHP_EOL; unlink('composer-setup.php'); exit(1); }"
 php composer-setup.php --quiet
 php -r "unlink('composer-setup.php');"
-php composer.phar install
+
+mv site/.env.testing ./.env.testing.keep
+rmdir site
+php composer.phar create-project laravel/laravel site "^13.0" --no-interaction
+(cd site && php artisan install:api --no-interaction)
+mv ./.env.testing.keep site/.env.testing
 ```
 
-Expected: `Installer verified`, then Composer installs `phpunit/phpunit` and writes `composer.lock`. `php vendor/bin/phpunit --version` prints `PHPUnit 11.`
+Expected: `Installer verified`. `create-project` ends with `Application key set successfully` and a small migration run against a local SQLite file. `install:api` ends with `API scaffolding installed. Please add the [Laravel\Sanctum\HasApiTokens] trait to your User model.` (Task 2 does that.) `(cd site && php artisan --version)` prints `Laravel Framework 13.`
 
-- [ ] **Step 3: Write the test settings and the test harness**
+If `rmdir site` fails, the folder holds more than the settings file: stop and report what is in it.
 
-Create `phpunit.xml`:
+- [ ] **Step 3: Remove what this project does not use**
+
+Laravel's starter comes with a SQLite database, its own `users`, `cache` and `jobs` tables, example tests, and generic instructions for coding agents. This project has its own database (`db/schema.sql`) and its own rules.
+
+Create `.gitignore` at the repository root:
+
+```
+/composer.phar
+/.env.testing.keep
+/.superpowers/
+```
+
+Run:
+
+```bash
+rm site/.env site/database/database.sqlite
+rm site/database/migrations/0001_01_01_000000_create_users_table.php
+rm site/database/migrations/0001_01_01_000001_create_cache_table.php
+rm site/database/migrations/0001_01_01_000002_create_jobs_table.php
+rm -r site/database/factories site/tests/Unit
+rm site/tests/Feature/ExampleTest.php site/AGENTS.md site/CLAUDE.md
+printf '.env.testing\n' >> site/.gitignore
+(cd site && php artisan key:generate --env=testing)
+ls site/database/migrations
+```
+
+Expected: `Application key set successfully.` (the key went into `site/.env.testing`), and `ls` shows exactly one file, ending in `_create_personal_access_tokens_table.php`. If `rm` reports that `AGENTS.md` or `CLAUDE.md` does not exist, that is fine: not every Laravel version ships them.
+
+- [ ] **Step 4: Write the test settings and the test harness**
+
+Replace `site/phpunit.xml` with:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<phpunit bootstrap="tests/bootstrap.php" colors="true" cacheDirectory=".phpunit.cache"
-         failOnWarning="true" failOnRisky="true" displayDetailsOnTestsThatTriggerWarnings="true">
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         failOnWarning="true"
+         failOnRisky="true"
+>
     <testsuites>
-        <testsuite name="api">
-            <directory>tests</directory>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
         </testsuite>
     </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
     <php>
-        <env name="APP_ENV" value="test" force="true"/>
+        <!-- APP_ENV=testing makes Laravel read .env.testing. The database comes from there, never from this file. -->
+        <env name="APP_ENV" value="testing"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="BCRYPT_ROUNDS" value="4"/>
+        <env name="CACHE_STORE" value="array"/>
+        <env name="MAIL_MAILER" value="array"/>
+        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
     </php>
 </phpunit>
 ```
 
-Create `tests/bootstrap.php`:
+Replace `site/tests/TestCase.php` with:
 
 ```php
 <?php
-/** Test start-up: picks the test database of site/.env.test, rebuilds it from db/schema.sql, points storage at a temp folder. */
+/** Base of every test. Refuses to start without a test database of its own, because the tests wipe their database. */
 declare(strict_types=1);
 
-// The tests drop every table. They only ever read site/.env.test, never site/.env.
-putenv('ENV_FILE=.env.test');
-require __DIR__ . '/../site/app/bootstrap.php';
+namespace Tests;
 
-$testFile = __DIR__ . '/../site/.env.test';
-$realFile = __DIR__ . '/../site/.env';
-if (!is_file($testFile) || (string) cfg('DB_NAME') === '') {
-    fwrite(STDERR, "Refusing to run: site/.env.test with the test database is missing.\n");
-    exit(1);
-}
-$real = is_file($realFile) ? (parse_ini_file($realFile, false, INI_SCANNER_RAW) ?: []) : [];
-if (($real['DB_NAME'] ?? null) === cfg('DB_NAME') && ($real['DB_HOST'] ?? '127.0.0.1') === cfg('DB_HOST', '127.0.0.1')) {
-    fwrite(STDERR, "Refusing to run: site/.env.test names the same database as site/.env, and the tests wipe it.\n");
-    exit(1);
-}
+use Dotenv\Dotenv;
+use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 
-$storage = sys_get_temp_dir() . '/laundry-test-storage';
-if (!is_dir($storage)) {
-    mkdir($storage, 0700, true);
-}
-putenv("STORAGE_DIR=$storage");
-// Set here and not in phpunit.xml: PHPUnit turns the text "true" in its config into 1.
-putenv('SCANNER_SIMULATOR=true');
-// Server errors are logged here instead of into the test output. Read this file when a test gets a 500.
-ini_set('error_log', $storage . '/php-error.log');
-
-/** Runs every statement of a .sql file. The files have no ";" at a line end inside a statement. */
-function run_sql_file(string $path): void
+abstract class TestCase extends BaseTestCase
 {
-    $sql = preg_replace('/^\s*--.*$/m', '', file_get_contents($path));
-    foreach (preg_split('/;[ \t]*(?:\r?\n|$)/', $sql) as $statement) {
-        if (trim($statement) !== '') {
-            db()->exec($statement);
+    protected function setUp(): void
+    {
+        self::refuseWithoutATestDatabase();
+        parent::setUp();
+    }
+
+    /** The tests only ever use the database of .env.testing, and never the one .env names. */
+    private static function refuseWithoutATestDatabase(): void
+    {
+        static $checked = false;
+        if ($checked) {
+            return;
+        }
+        $read = fn (string $file): array => is_file($file) ? Dotenv::parse(file_get_contents($file)) : [];
+        $test = $read(dirname(__DIR__) . '/.env.testing');
+        $real = $read(dirname(__DIR__) . '/.env');
+        if (($test['DB_DATABASE'] ?? '') === '') {
+            fwrite(STDERR, "Refusing to run: site/.env.testing with the test database is missing.\n");
+            exit(1);
+        }
+        $same = fn (string $key): bool => ($real[$key] ?? null) === ($test[$key] ?? null);
+        if ($same('DB_DATABASE') && $same('DB_HOST')) {
+            fwrite(STDERR, "Refusing to run: site/.env.testing names the same database as site/.env, and the tests wipe it.\n");
+            exit(1);
+        }
+        $checked = true;
+    }
+}
+```
+
+Create `site/tests/TestSeeder.php`:
+
+```php
+<?php
+/** What every test starts with: the mock data plus six users, one per role and a second driver. */
+declare(strict_types=1);
+
+namespace Tests;
+
+use Database\Seeders\DatabaseSeeder;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+
+final class TestSeeder extends Seeder
+{
+    public function run(): void
+    {
+        $this->call(DatabaseSeeder::class);
+        $hash = Hash::make(ApiTestCase::PASSWORD);
+        $roles = ['office' => 'office', 'inventory' => 'inventory', 'driver' => 'driver',
+            'driver2' => 'driver', 'washing' => 'washing', 'outbound' => 'outbound'];
+        foreach ($roles as $username => $role) {
+            DB::table('users')->insert(['name' => ucfirst($username), 'username' => $username,
+                'password_hash' => $hash, 'role' => $role]);
         }
     }
 }
-
-$pdo = db();
-$pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
-foreach ($pdo->query('SHOW TABLES')->fetchAll(PDO::FETCH_COLUMN) as $table) {
-    $pdo->exec("DROP TABLE `$table`");
-}
-$pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
-run_sql_file(__DIR__ . '/../db/schema.sql');
-
-require __DIR__ . '/ApiTestCase.php';
 ```
 
-Create `tests/ApiTestCase.php`:
+Create `site/tests/ApiTestCase.php`:
 
 ```php
 <?php
-/** Base class for every test: fresh mock data and six users before each test, and helpers to call the API in-process. */
+/** Base class for every API test: a seeded test database, each test rolled back at its end, and helpers to call the API. */
 declare(strict_types=1);
 
-use PHPUnit\Framework\TestCase;
+namespace Tests;
+
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 abstract class ApiTestCase extends TestCase
 {
-    protected const PASSWORD = 'test-password-1';
+    // Rebuilds the test database once per run (db/schema.sql, then TestSeeder) and wraps every test in a
+    // transaction that is rolled back. So every test starts with the same 40 ready mats and six users.
+    use RefreshDatabase;
 
-    private const TABLES = ['item_events', 'handover_items', 'handovers', 'tasks', 'contract_lines', 'contracts',
-        'items', 'item_types', 'zones', 'buildings', 'customers', 'areas', 'users'];
+    public const PASSWORD = 'test-password-1';
+
+    /** The seeder RefreshDatabase runs after it rebuilt the tables. */
+    protected $seeder = TestSeeder::class;
 
     /** @var array<string,int> username => user id */
     protected array $users = [];
 
     protected function setUp(): void
     {
-        $pdo = db();
-        $pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
-        foreach (self::TABLES as $table) {
-            $pdo->exec("TRUNCATE TABLE `$table`");
-        }
-        $pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
-        run_sql_file(__DIR__ . '/../db/seed.sql');
-
-        static $hash = null;
-        $hash ??= password_hash(self::PASSWORD, PASSWORD_BCRYPT, ['cost' => 4]);
-        $roles = ['office' => 'office', 'inventory' => 'inventory', 'driver' => 'driver',
-            'driver2' => 'driver', 'washing' => 'washing', 'outbound' => 'outbound'];
-        foreach ($roles as $username => $role) {
-            q('INSERT INTO users (name, username, password_hash, role) VALUES (?, ?, ?, ?)',
-                [ucfirst($username), $username, $hash, $role]);
-            $this->users[$username] = (int) $pdo->lastInsertId();
-        }
-
-        $_SESSION = [];
-        foreach (['throttle', 'proofs'] as $folder) {
-            array_map('unlink', glob(storage_dir() . "/$folder/*") ?: []);
-        }
+        parent::setUp();
+        $this->users = DB::table('users')->pluck('id', 'username')->all();
+        Storage::fake('local');   // proof files of a test never land in the real storage folder
     }
 
-    /** Calls the API without a web server. Path is relative to /api/v1, for example "/items?page=2". */
-    protected function api(string $method, string $path, array $body = [], array $files = [], array $headers = []): array
+    /**
+     * Calls the API in-process. Path is relative to /api/v1, for example "/items?page=2".
+     * Returns the status and the JSON body; for a file answer the body is the response itself.
+     * With $files the call is sent as a form: the files plus the JSON in the field "payload".
+     */
+    protected function api(string $method, string $path, array $body = [], array $files = []): array
     {
-        $query = [];
-        if (str_contains($path, '?')) {
-            [$path, $queryString] = explode('?', $path, 2);
-            parse_str($queryString, $query);
-        }
-        if (isset($_SESSION['csrf'])) {
-            $headers += ['x-csrf-token' => $_SESSION['csrf']];
-        }
-        return dispatch(new Request($method, $path, $query, $body, $files, $headers, '127.0.0.1'));
+        // Every call is a new request: the logged-in user is read fresh from the session, as on the server.
+        Auth::forgetGuards();
+        // The Origin of the web app is what makes Sanctum give the call the session cookie.
+        $headers = ['Origin' => config('app.url'), 'Accept' => 'application/json'];
+        $response = $files === []
+            ? $this->json($method, '/api/v1' . $path, $body, $headers)
+            : $this->call($method, '/api/v1' . $path, ['payload' => json_encode($body)], [], $files,
+                $this->transformHeadersToServerVars($headers));
+        $isJson = str_contains((string) $response->headers->get('Content-Type'), 'json');
+        return [$response->status(), $isJson ? $response->json() : $response];
     }
 
+    /** Puts a user in the session, as a login would. */
     protected function loginAs(string $username): void
     {
-        $_SESSION = ['uid' => $this->users[$username], 'csrf' => 'test-csrf'];
+        $this->withSession([Auth::guard('web')->getName() => $this->users[$username]]);
+    }
+
+    protected function logout(): void
+    {
+        $this->flushSession();
     }
 
     /** Asserts status 200 and returns the body. */
@@ -399,14 +493,14 @@ abstract class ApiTestCase extends TestCase
     /** The items row of mock mat n. */
     protected function item(int $n): array
     {
-        return q('SELECT * FROM items WHERE sku = ?', [sprintf('MOCK-%04d', $n)])->fetch();
+        return row('SELECT * FROM items WHERE sku = ?', [sprintf('MOCK-%04d', $n)]);
     }
 
     /** Puts mock mats straight into a status, to arrange a test. */
     protected function setItems(array $mats, string $status, ?int $holder = null, ?int $zone = null): void
     {
         foreach ($mats as $n) {
-            q('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE sku = ?',
+            DB::update('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE sku = ?',
                 [$status, $holder, $zone, sprintf('MOCK-%04d', $n)]);
         }
     }
@@ -414,67 +508,68 @@ abstract class ApiTestCase extends TestCase
     /** The history rows of mock mat n, oldest first. */
     protected function events(int $n): array
     {
-        return q('SELECT * FROM item_events WHERE item_id = ? ORDER BY id', [$this->item($n)['id']])->fetchAll();
+        return rows('SELECT * FROM item_events WHERE item_id = ? ORDER BY id', [$this->item($n)['id']]);
     }
 }
 ```
 
-`api()` and `loginAs()` need `dispatch()` and `Request`, which Task 2 builds. This task's tests do not call them.
+`api()` and `loginAs()` need the routes and the login, which Task 2 builds. This task's tests do not call them.
 
-- [ ] **Step 4: Write the failing test**
+- [ ] **Step 5: Write the failing test**
 
-Create `tests/DbTest.php`:
+Create `site/tests/Feature/DbTest.php`:
 
 ```php
 <?php
-/** The database layer: connection settings, parameter binding, transactions, and the schema's own refusals. */
+/** The database as the app meets it: the seeded start, UTC, strict mode, typed values, and the schema's own refusals. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class DbTest extends ApiTestCase
 {
     public function test_every_test_starts_with_40_ready_mats_and_six_users(): void
     {
-        $this->assertSame(40, (int) q("SELECT COUNT(*) FROM items WHERE status = 'ready'")->fetchColumn());
-        $this->assertCount(6, $this->users);
+        $this->assertSame(40, (int) DB::scalar("SELECT COUNT(*) FROM items WHERE status = 'ready'"));
+        $this->assertEqualsCanonicalizing(['driver', 'driver2', 'inventory', 'office', 'outbound', 'washing'], array_keys($this->users));
+    }
+
+    public function test_a_change_made_in_a_test_is_rolled_back_after_it(): void
+    {
+        // Whatever the order of the tests in this file, the one above still counts 40.
+        DB::update("UPDATE items SET status = 'registered' WHERE sku = 'MOCK-0001'");
+        $this->assertSame(39, (int) DB::scalar("SELECT COUNT(*) FROM items WHERE status = 'ready'"));
     }
 
     public function test_connection_runs_in_utc(): void
     {
-        $this->assertSame('+00:00', q('SELECT @@session.time_zone')->fetchColumn());
+        $this->assertSame('+00:00', DB::scalar('SELECT @@session.time_zone'));
     }
 
     public function test_strict_mode_refuses_an_unknown_status(): void
     {
-        $this->expectException(PDOException::class);
-        q("UPDATE items SET status = 'bogus' WHERE sku = 'MOCK-0001'");
+        $this->expectException(QueryException::class);
+        DB::update("UPDATE items SET status = 'bogus' WHERE sku = 'MOCK-0001'");
     }
 
     public function test_database_refuses_a_mat_at_a_customer_without_a_zone(): void
     {
-        $this->expectException(PDOException::class);
-        q("UPDATE items SET status = 'at_customer' WHERE sku = 'MOCK-0001'");
+        $this->expectException(QueryException::class);
+        DB::update("UPDATE items SET status = 'at_customer' WHERE sku = 'MOCK-0001'");
     }
 
-    public function test_q_binds_integers_so_limit_works(): void
+    public function test_integers_are_bound_as_integers_so_limit_works(): void
     {
-        $this->assertCount(2, q('SELECT id FROM items ORDER BY id LIMIT ? OFFSET ?', [2, 1])->fetchAll());
+        $this->assertCount(2, rows('SELECT id FROM items ORDER BY id LIMIT ? OFFSET ?', [2, 1]));
     }
 
-    public function test_q_returns_numbers_as_numbers(): void
+    public function test_numbers_come_back_as_numbers(): void
     {
         $this->assertSame(0, $this->item(1)['wash_count']);
-    }
-
-    public function test_tx_rolls_back_when_the_callback_throws(): void
-    {
-        try {
-            tx(function (): void {
-                q("UPDATE items SET status = 'registered' WHERE sku = 'MOCK-0001'");
-                throw new RuntimeException('boom');
-            });
-        } catch (RuntimeException) {
-        }
-        $this->assertSame('ready', $this->item(1)['status']);
     }
 
     public function test_days_after_adds_calendar_days(): void
@@ -485,125 +580,108 @@ final class DbTest extends ApiTestCase
 }
 ```
 
-- [ ] **Step 5: Run the test to see it fail**
+- [ ] **Step 6: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/DbTest.php`
-Expected: FAIL at start-up with `Failed opening required '.../site/app/bootstrap.php'`.
+Run: `(cd site && php artisan test tests/Feature/DbTest.php)`
+Expected: FAIL. Every test errors while the test database is being built and seeded, because nothing loads `db/schema.sql` yet. If the output is `Refusing to run`, the Prerequisites are not done: stop.
 
-- [ ] **Step 6: Write the settings loader and the database layer**
+- [ ] **Step 7: Write the settings, the helpers, the migration and the seeder**
 
-Create `site/.env.example`:
+Replace `site/.env.example` with:
 
 ```ini
-; Two copies of this file, never committed:
-;   site/.env       on the server, with the real database
-;   site/.env.test  on the development machine, with the test database. The tests wipe that database.
-; Host, name and user come from the TransIP control panel.
+# Every setting that differs per machine lives in a copy of this file. Nothing is hardcoded in the code.
+#   site/.env          on the server, with the real database
+#   site/.env.testing  on the development machine, with the test database. The tests wipe that database.
+# Neither copy is ever committed.
+
+APP_NAME=Laundry
+# "production" on the server, "testing" in .env.testing.
+APP_ENV=production
+# Filled in by: php artisan key:generate
+APP_KEY=
+# true shows error details in API answers. Never true on the server.
+APP_DEBUG=false
+# The address of the site, with https. The login cookie only works for the web app at this address.
+APP_URL=https://example.nl
+
+# Database: host, name, user and password come from the TransIP control panel.
+DB_CONNECTION=mysql
 DB_HOST=
-DB_NAME=
-DB_USER=
-DB_PASS=""
-; local or production
-APP_ENV=local
-; true while the handheld is simulated. false switches the simulator and GET /sim/items off.
+DB_PORT=3306
+DB_DATABASE=
+DB_USERNAME=
+DB_PASSWORD=""
+
+# true while the handheld is simulated. false switches the simulator and GET /sim/items off.
 SCANNER_SIMULATOR=true
-; Optional: where proofs, sessions and login throttle files go. Default: site/storage
-; STORAGE_DIR=
+
+# The login session: kept in files under storage/, for 12 hours (one working day).
+SESSION_DRIVER=file
+SESSION_LIFETIME=720
+# true sends the login cookie over https only. false only on a development machine without https.
+SESSION_SECURE_COOKIE=true
+# Only when the web app is served from another host than APP_URL: host names, comma separated, without https://
+# SANCTUM_STATEFUL_DOMAINS=
+
+# No extra tables and no extra services: cache in files, no queue, proofs on the server's own disk.
+CACHE_STORE=file
+QUEUE_CONNECTION=sync
+FILESYSTEM_DISK=local
+
+LOG_CHANNEL=stack
+LOG_STACK=single
+LOG_LEVEL=warning
+BCRYPT_ROUNDS=12
 ```
 
-Create `site/app/bootstrap.php`:
+Create `site/config/laundry.php`:
 
 ```php
 <?php
-/** Loads the settings and every backend file. Required first by www/index.php, the bin scripts and the tests. */
-declare(strict_types=1);
+/** Settings of the mat tracking app itself. The values come from .env, so the code is the same on every machine. */
 
-/**
- * One setting. The process environment wins, then the settings file, then the default.
- * The settings file is site/.env. The environment variable ENV_FILE picks another file in site/,
- * which is how the tests use their own database (site/.env.test).
- */
-function cfg(string $key, ?string $default = null): ?string
-{
-    static $file = null;
-    $env = getenv($key);
-    if ($env !== false) {
-        return $env;
-    }
-    $path = __DIR__ . '/../' . basename(getenv('ENV_FILE') ?: '.env');
-    $file ??= is_file($path) ? parse_ini_file($path, false, INI_SCANNER_RAW) : [];
-    return $file[$key] ?? $default;
-}
-
-/** Folder for proof files, sessions and login throttle files. Outside the web root. */
-function storage_dir(): string
-{
-    return cfg('STORAGE_DIR', __DIR__ . '/../storage');
-}
-
-foreach (['db'] as $file) {
-    require __DIR__ . "/$file.php";
-}
+return [
+    // true while the handheld is simulated. false refuses scans with source "simulator" and hides GET /sim/items.
+    'simulator' => (bool) env('SCANNER_SIMULATOR', false),
+];
 ```
 
-Create `site/app/db.php`:
+In `site/config/database.php`, inside the `'mysql'` connection (the first of the two places with this line), replace the line `'strict' => true,` with:
+
+```php
+'strict' => true,
+// Every DATETIME is UTC. Without the strict mode MySQL silently accepts an unknown status.
+'timezone' => '+00:00',
+'modes' => ['STRICT_ALL_TABLES', 'NO_ZERO_DATE', 'NO_ZERO_IN_DATE', 'ERROR_FOR_DIVISION_BY_ZERO', 'NO_ENGINE_SUBSTITUTION'],
+```
+
+Create `site/app/helpers.php`:
 
 ```php
 <?php
-/** Database access: one PDO connection in UTC and strict mode, prepared statements only, transactions, date helpers. */
+/** Small functions used everywhere: rows as arrays, the date helpers, running a .sql file, and the one error shape. */
 declare(strict_types=1);
 
-function db(): PDO
+use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\QueryException;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+
+/** All rows of a query, each as an array. Values are bound to the "?" marks, never pasted into the SQL. */
+function rows(string $sql, array $params = []): array
 {
-    static $pdo = null;
-    if ($pdo === null) {
-        $pdo = new PDO(
-            sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', cfg('DB_HOST', '127.0.0.1'), cfg('DB_NAME')),
-            cfg('DB_USER'),
-            cfg('DB_PASS'),
-            [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_EMULATE_PREPARES => false,
-            ],
-        );
-        // Without strict mode MySQL silently accepts an unknown status.
-        $pdo->exec("SET time_zone = '+00:00', sql_mode = 'STRICT_ALL_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
-    }
-    return $pdo;
+    return array_map(fn (object $row): array => (array) $row, DB::select($sql, $params));
 }
 
-/** Runs one prepared statement with positional "?" parameters. The only way the app talks SQL. */
-function q(string $sql, array $params = []): PDOStatement
+/** The first row of a query as an array, or null when there is none. */
+function row(string $sql, array $params = []): ?array
 {
-    $statement = db()->prepare($sql);
-    foreach (array_values($params) as $i => $value) {
-        $type = match (true) {
-            $value === null => PDO::PARAM_NULL,
-            is_int($value), is_bool($value) => PDO::PARAM_INT,
-            default => PDO::PARAM_STR,
-        };
-        $statement->bindValue($i + 1, is_bool($value) ? (int) $value : $value, $type);
-    }
-    $statement->execute();
-    return $statement;
-}
-
-/** Runs $fn in one transaction: commit when it returns, roll back when it throws. */
-function tx(callable $fn): mixed
-{
-    $pdo = db();
-    $pdo->beginTransaction();
-    try {
-        $result = $fn();
-        $pdo->commit();
-        return $result;
-    } catch (Throwable $e) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-        throw $e;
-    }
+    $row = DB::selectOne($sql, $params);
+    return $row === null ? null : (array) $row;
 }
 
 /** "?,?,?" for an IN (...) list with one mark per element. */
@@ -622,60 +700,153 @@ function days_after(string $date, int $days): string
 {
     return (new DateTimeImmutable($date))->modify(sprintf('%+d days', $days))->format('Y-m-d');
 }
+
+/** Runs every statement of a .sql file. The files have no ";" at a line end inside a statement. */
+function run_sql_file(string $path): void
+{
+    $sql = preg_replace('/^\s*--.*$/m', '', file_get_contents($path));
+    foreach (preg_split('/;[ \t]*(?:\r?\n|$)/', $sql) as $statement) {
+        if (trim($statement) !== '') {
+            DB::unprepared($statement);
+        }
+    }
+}
+
+/** Stops the request with the API's one error shape. Inside DB::transaction() it also rolls the transaction back. */
+function fail(int $status, string $code, string $message): never
+{
+    throw new HttpResponseException(response()->json(['error' => ['code' => $code, 'message' => $message]], $status));
+}
+
+/** Any exception as the API's one error shape. bootstrap/app.php calls this for every failed API request. */
+function api_error(Throwable $e): Response
+{
+    if ($e instanceof HttpResponseException) {
+        return $e->getResponse();   // made by fail()
+    }
+    $dbError = $e instanceof QueryException ? ($e->errorInfo[1] ?? 0) : 0;
+    $http = $e instanceof HttpExceptionInterface ? $e->getStatusCode() : 0;
+    [$status, $code, $message] = match (true) {
+        $e instanceof ValidationException => [422, 'invalid_input', $e->validator->errors()->first()],
+        $e instanceof AuthenticationException => [401, 'not_logged_in', 'Log in first.'],
+        // The database is the last line of defence. Its refusals become the API's error codes.
+        $dbError === 1062 => [409, 'duplicate', 'That value is already in use.'],
+        $dbError === 1452 => [422, 'invalid_reference', 'A referenced record does not exist.'],
+        $dbError === 3819, $dbError === 4025 => [422, 'rule_violation', 'The database refused an impossible state.'],
+        $http === 404 => [404, 'not_found', 'No such path.'],
+        $http === 405 => [405, 'method_not_allowed', 'This path does not accept that method.'],
+        $http === 419 => [403, 'csrf', 'Missing or wrong CSRF token.'],
+        $http !== 0 => [$http, 'http_error', $e->getMessage()],
+        // With APP_DEBUG=false the details stay in the server log.
+        default => [500, 'server_error', config('app.debug') ? $e->getMessage() : 'Something went wrong.'],
+    };
+    return response()->json(['error' => ['code' => $code, 'message' => $message]], $status);
+}
 ```
 
-- [ ] **Step 7: Run the test to see it pass**
+Create `site/database/migrations/0001_01_01_000000_load_schema.php`:
 
-Run: `php vendor/bin/phpunit tests/DbTest.php`
-Expected: `OK (8 tests, ...)`.
+```php
+<?php
+/** Builds the 13 tables by running db/schema.sql as it is. That file stays the one description of the database. */
+declare(strict_types=1);
 
-If `test_q_returns_numbers_as_numbers` fails because `wash_count` comes back as the string `"0"`, the PDO driver is not `mysqlnd`: report it, do not cast around it.
+use Illuminate\Database\Migrations\Migration;
 
-- [ ] **Step 8: Commit**
+return new class extends Migration
+{
+    public function up(): void
+    {
+        run_sql_file(base_path('../db/schema.sql'));
+    }
+};
+```
+
+Replace `site/database/seeders/DatabaseSeeder.php` with:
+
+```php
+<?php
+/** Loads the mock data of db/seed.sql: two customers, 40 mock mats, two draft contracts. No users. */
+declare(strict_types=1);
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+
+final class DatabaseSeeder extends Seeder
+{
+    public function run(): void
+    {
+        run_sql_file(base_path('../db/seed.sql'));
+    }
+}
+```
+
+Now tell Composer about `app/helpers.php`, and give the project its name and version. Run:
+
+```bash
+php -r '$f = "site/composer.json"; $c = json_decode(file_get_contents($f), true); $c["name"] = "proti/laundry-poc"; $c["description"] = "Proti mat tracking POC: Laravel API"; $c["version"] = "0.4.0"; $c["autoload"]["files"] = ["app/helpers.php"]; file_put_contents($f, json_encode($c, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");'
+(cd site && php ../composer.phar dump-autoload)
+```
+
+Expected: `Generated optimized autoload files`. `git diff --stat site/composer.json` is not available yet (the folder is new), so check by eye that `site/composer.json` still has its `require`, `require-dev` and `scripts` blocks and now has `"files": ["app/helpers.php"]` inside `"autoload"`.
+
+- [ ] **Step 8: Run the test to see it pass**
+
+Run: `(cd site && php artisan test tests/Feature/DbTest.php)`
+Expected: `Tests:    8 passed`.
+
+If `test_numbers_come_back_as_numbers` fails because `wash_count` comes back as the string `"0"`, the PDO driver is not `mysqlnd`: report it, do not cast around it. If `test_connection_runs_in_utc` fails, the three lines in `site/config/database.php` went into the `'mariadb'` block instead of the `'mysql'` block.
+
+- [ ] **Step 9: Commit**
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.0-2563eb/' README.md
-git add .gitignore composer.json composer.lock phpunit.xml site/.env.example site/app/bootstrap.php site/app/db.php tests/bootstrap.php tests/ApiTestCase.php tests/DbTest.php README.md
-git commit -m "Add project skeleton and database test harness at 0.4.0."
+git add .gitignore site README.md
+git status --short | grep -E '\.env\.testing|\.env$|vendor/|composer\.phar' ; echo "secrets check done"
+git commit -m "Add the Laravel application and the database test harness at 0.4.0."
 ```
+
+Expected before the commit: only `secrets check done`. A line above it names a file that must not be committed: run `git reset` and fix the ignore files first.
 
 ---
 
-### Task 2: HTTP kernel and login
+### Task 2: Routing, the error shape and login
 
 **Files:**
-- Create: `site/app/http.php`, `site/app/kernel.php`, `site/app/routes.php`, `site/app/auth.php`
-- Create: `site/www/index.php`, `site/www/.htaccess`, `site/www/.user.ini`
-- Modify: `site/app/bootstrap.php` (file list)
-- Test: `tests/AuthTest.php`
+- Replace: `site/app/Models/User.php`, `site/bootstrap/app.php`, `site/routes/api.php`
+- Create: `site/app/Http/Middleware/Role.php`, `site/app/Http/Middleware/ApiHeaders.php`
+- Create: `site/app/Http/Controllers/AuthController.php`
+- Modify: `site/public/.htaccess` (HTTPS redirect)
+- Create: `site/public/.user.ini`
+- Test: `site/tests/Feature/AuthTest.php`
 
 **Interfaces:**
-- Consumes: `cfg()`, `storage_dir()`, `q()` from Task 1.
+- Consumes: `fail()`, `api_error()` from Task 1; Laravel's `Auth`, `RateLimiter`, session and Sanctum.
 - Produces:
-  - `final class Request { string $method; string $path; array $query; array $body; array $files; array $headers; string $ip; }` — `path` is relative to `/api/v1`; `files` maps a field name to a temp file path; `headers` has lowercase keys
-  - `final class ApiError extends RuntimeException { int $status; string $errorCode; }`
-  - `final class FileOut { string $path; string $mime; }`
-  - `fail(int $status, string $code, string $message): never`
-  - `str_in(array $in, string $key, int $max, bool $required = true): ?string` — trims; empty counts as absent
-  - `int_in(array $in, string $key, bool $required = true): ?int` — whole number, zero or more
-  - `bool_in(array $in, string $key): ?bool` — null when the key is absent
-  - `date_in(array $in, string $key, bool $required = true): ?string` — `Y-m-d`
-  - `enum_in(array $in, string $key, array $allowed, bool $required = true): ?string`
-  - `dispatch(Request $req): array` — `[int $status, array|FileOut $body]`
-  - `const ROLES`
-  - `current_user(): array` — `id, name, username, role, is_active`; throws 401
-  - `user_view(array $u): array`
-  - Route table entries are `[method, pattern, roles|null, handler]`; `{name}` in a pattern is a numeric id passed to the handler after `$req` and `$user`
+  - `App\Models\User` — `User::ROLES`; as JSON a user is exactly `id, name, username, role, is_active` (`is_active` true or false)
+  - Middleware alias `role`: on every route behind the login it logs a switched-off user out (`401`); `role:office,inventory` lets only those roles through (`403 forbidden`)
+  - In a controller: `$request->user()` is the logged-in `User` (`->id` int, `->role` string); `$request->validate([...])` answers `422 invalid_input` by itself; a path id arrives as a method parameter `int $id`
+  - Text input is trimmed, and an empty text arrives as `null` (Laravel's `TrimStrings` and `ConvertEmptyStringsToNull`), except a field named `password`
+  - `site/routes/api.php`: every path is relative to `/api/v1`. Routes behind the login go inside the one `auth:sanctum` group; later tasks add their lines at the end of that group. `$scanners` in that group is the middleware for the four scanning roles
   - Routes: `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/AuthTest.php`:
+Create `site/tests/Feature/AuthTest.php`:
 
 ```php
 <?php
-/** Login, logout, session, CSRF token, login throttle, and the kernel's 404 and 405. */
+/** Login, logout, the session, the login throttle, and the one error shape for unknown paths and server errors. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
+use RuntimeException;
+use Tests\ApiTestCase;
 
 final class AuthTest extends ApiTestCase
 {
@@ -688,31 +859,33 @@ final class AuthTest extends ApiTestCase
     {
         $out = $this->ok($this->login('Driver'));   // usernames are not case sensitive
         $this->assertSame(['id', 'name', 'username', 'role', 'is_active'], array_keys($out['user']));
-        $this->assertSame('driver', $out['user']['role']);
-        $this->assertSame($this->users['driver'], $_SESSION['uid']);
-        $this->assertSame($_SESSION['csrf'], $out['csrf_token']);
-        $this->assertSame(64, strlen($out['csrf_token']));
+        $this->assertSame(['driver', true], [$out['user']['role'], $out['user']['is_active']]);
+        $this->assertAuthenticatedAs(User::find($this->users['driver']), 'web');
+        $this->assertSame(csrf_token(), $out['csrf_token']);
+        $this->assertNotSame('', $out['csrf_token']);
     }
 
     public function test_wrong_password_and_unknown_user_get_the_same_answer(): void
     {
         $this->assertError(401, 'bad_login', $this->login('driver', 'wrong-password'));
         $this->assertError(401, 'bad_login', $this->login('nobody', 'wrong-password'));
-        $this->assertSame([], $_SESSION);
+        $this->assertGuest('web');
     }
 
     public function test_a_switched_off_user_cannot_log_in(): void
     {
-        q('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver']]);
+        DB::update('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver']]);
         $this->assertError(401, 'bad_login', $this->login('driver'));
+        $this->assertGuest('web');
     }
 
     public function test_a_user_switched_off_while_logged_in_is_logged_out_at_his_next_call(): void
     {
-        $this->loginAs('driver');
-        q('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver']]);
+        $this->ok($this->login('driver'));
+        $this->ok($this->api('GET', '/auth/me'));
+        DB::update('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver']]);
         $this->assertError(401, 'not_logged_in', $this->api('GET', '/auth/me'));
-        $this->assertSame([], $_SESSION);
+        $this->assertGuest('web');
     }
 
     public function test_five_failed_tries_block_the_sixth_even_with_the_right_password(): void
@@ -721,6 +894,7 @@ final class AuthTest extends ApiTestCase
             $this->assertError(401, 'bad_login', $this->login('driver', 'wrong-password'));
         }
         $this->assertError(429, 'too_many_tries', $this->login('driver'));
+        $this->assertError(429, 'too_many_tries', $this->login('DRIVER'));   // the same user in capitals
         $this->ok($this->login('washing'));   // another username is not affected
     }
 
@@ -730,7 +904,7 @@ final class AuthTest extends ApiTestCase
             $this->login('driver', 'wrong-password');
         }
         $this->ok($this->login('driver'));
-        $_SESSION = [];
+        $this->logout();
         for ($i = 0; $i < 4; $i++) {
             $this->assertError(401, 'bad_login', $this->login('driver', 'wrong-password'));
         }
@@ -740,6 +914,7 @@ final class AuthTest extends ApiTestCase
     {
         $this->assertError(422, 'invalid_input', $this->api('POST', '/auth/login', ['username' => 'driver']));
         $this->assertError(422, 'invalid_input', $this->api('POST', '/auth/login', ['password' => 'x']));
+        $this->assertError(422, 'invalid_input', $this->api('POST', '/auth/login', ['username' => ['a'], 'password' => 'x']));
     }
 
     public function test_me_needs_a_login(): void
@@ -748,22 +923,14 @@ final class AuthTest extends ApiTestCase
         $this->loginAs('office');
         $out = $this->ok($this->api('GET', '/auth/me'));
         $this->assertSame('office', $out['user']['role']);
-        $this->assertSame('test-csrf', $out['csrf_token']);
-    }
-
-    public function test_a_changing_request_needs_the_csrf_token(): void
-    {
-        $this->loginAs('office');
-        $this->assertError(403, 'csrf', dispatch(new Request('POST', '/auth/logout')));
-        $this->assertError(403, 'csrf', dispatch(new Request('POST', '/auth/logout', headers: ['x-csrf-token' => 'wrong'])));
-        $this->assertNotSame([], $_SESSION);
+        $this->assertSame(csrf_token(), $out['csrf_token']);
     }
 
     public function test_logout_ends_the_session(): void
     {
-        $this->loginAs('office');
-        $this->ok($this->api('POST', '/auth/logout'));
-        $this->assertSame([], $_SESSION);
+        $this->ok($this->login('office'));
+        $this->assertSame(['ok' => true], $this->ok($this->api('POST', '/auth/logout')));
+        $this->assertGuest('web');
         $this->assertError(401, 'not_logged_in', $this->api('GET', '/auth/me'));
     }
 
@@ -773,482 +940,259 @@ final class AuthTest extends ApiTestCase
         $this->assertError(405, 'method_not_allowed', $this->api('DELETE', '/auth/me'));
     }
 
-    public function test_the_dummy_hash_is_a_real_bcrypt_hash(): void
+    public function test_a_server_error_hides_its_details_unless_debug_is_on(): void
     {
-        $this->assertSame('2y', password_get_info(DUMMY_HASH)['algo']);
-    }
+        Route::get('/api/v1/boom', fn () => throw new RuntimeException('secret detail'));
 
-    public function test_a_server_error_hides_its_details_in_production(): void
-    {
-        putenv('APP_ENV=production');
-        try {
-            [$status, $body] = server_error(new RuntimeException('secret detail'));
-        } finally {
-            putenv('APP_ENV=test');
-        }
-        $this->assertSame(500, $status);
-        $this->assertSame('Something went wrong.', $body['error']['message']);
+        config(['app.debug' => false]);
+        [$status, $body] = $this->api('GET', '/boom');
+        $this->assertSame([500, 'server_error', 'Something went wrong.'],
+            [$status, $body['error']['code'], $body['error']['message']]);
+
+        config(['app.debug' => true]);
+        $this->assertSame('secret detail', $this->api('GET', '/boom')[1]['error']['message']);
     }
 }
 ```
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/AuthTest.php`
-Expected: FAIL with `Class "Request" not found`.
+Run: `(cd site && php artisan test tests/Feature/AuthTest.php)`
+Expected: FAIL. The routes do not exist yet, so every call gets Laravel's own `404`.
 
-- [ ] **Step 3: Write the request and input helpers**
+- [ ] **Step 3: Write the user model and the two middleware**
 
-Create `site/app/http.php`:
+Replace `site/app/Models/User.php` with:
 
 ```php
 <?php
-/** The request as the handlers see it, the one way to fail, and the readers that validate input at the API boundary. */
+/** A person who logs in. One role per user. The password is stored only as a hash and never leaves the server. */
 declare(strict_types=1);
 
-final class Request
-{
-    /**
-     * @param string $path    relative to /api/v1, for example "/items/3"
-     * @param array  $files   field name => path of the uploaded temp file
-     * @param array  $headers lowercase header name => value
-     */
-    public function __construct(
-        public readonly string $method,
-        public readonly string $path,
-        public readonly array $query = [],
-        public readonly array $body = [],
-        public readonly array $files = [],
-        public readonly array $headers = [],
-        public readonly string $ip = '',
-    ) {
-    }
-}
+namespace App\Models;
 
-final class ApiError extends RuntimeException
-{
-    public function __construct(
-        public readonly int $status,
-        public readonly string $errorCode,
-        string $message,
-    ) {
-        parent::__construct($message);
-    }
-}
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Laravel\Sanctum\HasApiTokens;
 
-/** A handler returns this to send a stored file instead of JSON. */
-final class FileOut
+final class User extends Authenticatable
 {
-    public function __construct(
-        public readonly string $path,
-        public readonly string $mime,
-    ) {
-    }
-}
+    // Not used yet: it is what lets the handheld log in with a token later, without a new build.
+    use HasApiTokens;
 
-function fail(int $status, string $code, string $message): never
-{
-    throw new ApiError($status, $code, $message);
-}
+    public const ROLES = ['office', 'inventory', 'driver', 'washing', 'outbound'];
 
-/** Text of at most $max characters, trimmed. Empty text counts as absent. */
-function str_in(array $in, string $key, int $max, bool $required = true): ?string
-{
-    $value = $in[$key] ?? null;
-    if (is_string($value)) {
-        $value = trim($value);
-    }
-    if ($value === null || $value === '') {
-        if ($required) {
-            fail(422, 'invalid_input', "$key is required.");
-        }
-        return null;
-    }
-    if (!is_string($value) || mb_strlen($value) > $max) {
-        fail(422, 'invalid_input', "$key must be text of at most $max characters.");
-    }
-    return $value;
-}
+    /** The schema names the column password_hash. Laravel's login finds the hash through this name. */
+    protected $authPasswordName = 'password_hash';
 
-/** A whole number of zero or more. Accepts 12 and "12". */
-function int_in(array $in, string $key, bool $required = true): ?int
-{
-    $value = $in[$key] ?? null;
-    if ($value === null) {
-        if ($required) {
-            fail(422, 'invalid_input', "$key is required.");
-        }
-        return null;
-    }
-    $isNumber = (is_int($value) && $value >= 0) || (is_string($value) && ctype_digit($value) && strlen($value) <= 18);
-    if (!$isNumber) {
-        fail(422, 'invalid_input', "$key must be a whole number.");
-    }
-    return (int) $value;
-}
+    /** Exactly what the API shows of a user. */
+    protected $visible = ['id', 'name', 'username', 'role', 'is_active'];
 
-/** true or false. Null when the key is absent. */
-function bool_in(array $in, string $key): ?bool
-{
-    if (!array_key_exists($key, $in)) {
-        return null;
-    }
-    if (!is_bool($in[$key])) {
-        fail(422, 'invalid_input', "$key must be true or false.");
-    }
-    return $in[$key];
-}
-
-/** A calendar day written as 2026-10-19. */
-function date_in(array $in, string $key, bool $required = true): ?string
-{
-    $value = $in[$key] ?? null;
-    if ($value === null && !$required) {
-        return null;
-    }
-    $date = is_string($value) ? DateTimeImmutable::createFromFormat('!Y-m-d', $value) : false;
-    if (!$date || $date->format('Y-m-d') !== $value) {
-        fail(422, 'invalid_input', "$key must be a date like 2026-10-19.");
-    }
-    return $value;
-}
-
-/** One of a fixed list of words. */
-function enum_in(array $in, string $key, array $allowed, bool $required = true): ?string
-{
-    $value = $in[$key] ?? null;
-    if ($value === null && !$required) {
-        return null;
-    }
-    if (!is_string($value) || !in_array($value, $allowed, true)) {
-        fail(422, 'invalid_input', "$key must be one of: " . implode(', ', $allowed) . '.');
-    }
-    return $value;
+    protected $casts = ['is_active' => 'boolean'];
 }
 ```
 
-- [ ] **Step 4: Write the kernel and the route table**
-
-Create `site/app/kernel.php`:
+Create `site/app/Http/Middleware/Role.php`:
 
 ```php
 <?php
-/** Request routing: finds the route, checks login, CSRF token and role, and turns every failure into the one error shape. */
+/** Runs on every route behind the login: a switched-off user is out at once, and "role:a,b" lets only those roles through. */
 declare(strict_types=1);
 
-const ROLES = ['office', 'inventory', 'driver', 'washing', 'outbound'];
+namespace App\Http\Middleware;
 
-/** @return array{0:int,1:array|FileOut} HTTP status and body */
-function dispatch(Request $req): array
+use Closure;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Symfony\Component\HttpFoundation\Response;
+
+final class Role
 {
-    try {
-        return [200, route($req)];
-    } catch (ApiError $e) {
-        return error_response($e->status, $e->errorCode, $e->getMessage());
-    } catch (PDOException $e) {
-        // The database is the last line of defence. Map its refusals to the API's error codes.
-        return match ($e->errorInfo[1] ?? 0) {
-            1062 => error_response(409, 'duplicate', 'That value is already in use.'),
-            1452 => error_response(422, 'invalid_reference', 'A referenced record does not exist.'),
-            3819, 4025 => error_response(422, 'rule_violation', 'The database refused an impossible state.'),
-            default => server_error($e),
-        };
-    } catch (Throwable $e) {
-        return server_error($e);
-    }
-}
-
-function error_response(int $status, string $code, string $message): array
-{
-    return [$status, ['error' => ['code' => $code, 'message' => $message]]];
-}
-
-function server_error(Throwable $e): array
-{
-    error_log((string) $e);
-    // In production the details stay in the server log.
-    $message = cfg('APP_ENV') === 'production' ? 'Something went wrong.' : $e->getMessage();
-    return error_response(500, 'server_error', $message);
-}
-
-function route(Request $req): array|FileOut
-{
-    static $routes = null;
-    $routes ??= require __DIR__ . '/routes.php';
-
-    $pathKnown = false;
-    foreach ($routes as [$method, $pattern, $roles, $handler]) {
-        $regex = '#^' . preg_replace('/\{\w+\}/', '(\d{1,18})', $pattern) . '$#';
-        if (!preg_match($regex, $req->path, $match)) {
-            continue;
+    public function handle(Request $request, Closure $next, string ...$roles): Response
+    {
+        $user = $request->user();
+        if (!$user->is_active) {
+            // The user is read from the database on every call, so switching someone off works at his next call.
+            Auth::guard('web')->logout();
+            fail(401, 'not_logged_in', 'Log in first.');
         }
-        $pathKnown = true;
-        if ($method !== $req->method) {
-            continue;
-        }
-        $ids = array_map('intval', array_slice($match, 1));
-        if ($roles === null) {
-            return $handler($req, null, ...$ids);
-        }
-        $user = current_user();
-        $token = $_SESSION['csrf'] ?? '';
-        $sent = $req->headers['x-csrf-token'] ?? '';
-        if ($req->method !== 'GET' && ($token === '' || !is_string($sent) || !hash_equals($token, $sent))) {
-            fail(403, 'csrf', 'Missing or wrong CSRF token.');
-        }
-        if (!in_array($user['role'], $roles, true)) {
+        if ($roles !== [] && !in_array($user->role, $roles, true)) {
             fail(403, 'forbidden', 'Your role may not do this.');
         }
-        return $handler($req, $user, ...$ids);
+        return $next($request);
     }
-    if ($pathKnown) {
-        fail(405, 'method_not_allowed', 'This path does not accept that method.');
-    }
-    fail(404, 'not_found', 'No such path.');
 }
 ```
 
-Create `site/app/routes.php`:
+Create `site/app/Http/Middleware/ApiHeaders.php`:
 
 ```php
 <?php
-/** The route table: method, path, roles that may call it (null = no login needed), handler. */
+/** Headers on every API answer: never guess a content type, never cache, and HTTPS only once the site is live. */
 declare(strict_types=1);
 
-$O = 'office';
-$I = 'inventory';
-$D = 'driver';
-$W = 'washing';
-$X = 'outbound';
-$all = [$O, $I, $D, $W, $X];
-$scanners = [$I, $D, $W, $X];
+namespace App\Http\Middleware;
 
-return [
-    ['POST', '/auth/login',  null, 'auth_login'],
-    ['POST', '/auth/logout', $all, 'auth_logout'],
-    ['GET',  '/auth/me',     $all, 'auth_me'],
-];
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+final class ApiHeaders
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        $response = $next($request);
+        $response->headers->set('X-Content-Type-Options', 'nosniff');
+        $response->headers->set('Cache-Control', 'no-store');
+        if (app()->isProduction()) {
+            $response->headers->set('Strict-Transport-Security', 'max-age=31536000');
+        }
+        return $response;
+    }
+}
 ```
 
-- [ ] **Step 5: Write login, logout and the throttle**
+- [ ] **Step 4: Write login and logout**
 
-First make the dummy hash. Run:
-
-```bash
-php -r "echo password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT), PHP_EOL;"
-```
-
-It prints one line starting with `$2y$`. Use that line as the value of `DUMMY_HASH` below, in single quotes.
-
-Create `site/app/auth.php`:
+Create `site/app/Http/Controllers/AuthController.php`:
 
 ```php
 <?php
-/** Login, logout and the logged-in user. The session holds the user id and the CSRF token; failed logins are throttled. */
+/** Login, logout and the logged-in user. Laravel keeps the session; failed logins are throttled per username and address. */
 declare(strict_types=1);
 
-// A real bcrypt hash of a random string nobody knows. Checking a wrong username against it
-// makes "unknown user" take as long as "wrong password", so timing does not reveal usernames.
-const DUMMY_HASH = 'PUT THE LINE FROM THE COMMAND ABOVE HERE';
+namespace App\Http\Controllers;
 
-const LOGIN_MAX_TRIES = 5;
-const LOGIN_WINDOW_SECONDS = 60;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\RateLimiter;
 
-function user_view(array $u): array
+final class AuthController extends Controller
 {
-    return ['id' => $u['id'], 'name' => $u['name'], 'username' => $u['username'],
-        'role' => $u['role'], 'is_active' => (bool) $u['is_active']];
-}
+    private const MAX_TRIES = 5;
 
-/** The logged-in user, read fresh on every call so a switched-off user is out at his next call. */
-function current_user(): array
-{
-    $id = $_SESSION['uid'] ?? null;
-    $user = $id === null ? false
-        : q('SELECT id, name, username, role, is_active FROM users WHERE id = ?', [$id])->fetch();
-    if (!$user || !$user['is_active']) {
-        $_SESSION = [];
-        fail(401, 'not_logged_in', 'Log in first.');
-    }
-    return $user;
-}
+    private const WINDOW_SECONDS = 60;
 
-// ponytail: one small file per username and address. A failed try for a made-up username leaves a file
-// until someone cleans storage/throttle. Move to a database table if that folder ever grows.
-function throttle_file(string $key): string
-{
-    $dir = storage_dir() . '/throttle';
-    if (!is_dir($dir)) {
-        mkdir($dir, 0700, true);
-    }
-    return $dir . '/' . hash('sha256', $key);
-}
+    public function login(Request $request): array
+    {
+        if (!$request->hasSession()) {
+            // Sanctum starts a session only for calls that come from the web app's own address (APP_URL).
+            fail(403, 'csrf', 'Log in from the web app.');
+        }
+        $in = $request->validate(['username' => 'required|string|max:60', 'password' => 'required|string']);
+        $username = strtolower($in['username']);
 
-/** Times of the failed tries inside the window. */
-function throttle_recent(string $key): array
-{
-    $file = throttle_file($key);
-    $times = is_file($file) ? array_map('intval', file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)) : [];
-    return array_values(array_filter($times, fn (int $t) => $t > time() - LOGIN_WINDOW_SECONDS));
-}
-
-function auth_login(Request $req): array
-{
-    $username = strtolower(str_in($req->body, 'username', 60));
-    $password = $req->body['password'] ?? null;
-    if (!is_string($password) || $password === '') {
-        fail(422, 'invalid_input', 'password is required.');
+        $key = 'login|' . $username . '|' . $request->ip();
+        if (RateLimiter::tooManyAttempts($key, self::MAX_TRIES)) {
+            fail(429, 'too_many_tries', 'Too many tries. Wait a minute and try again.');
+        }
+        // attempt() takes as long for an unknown user as for a wrong password, so timing does not reveal usernames.
+        if (!Auth::guard('web')->attempt(['username' => $username, 'password' => $in['password'], 'is_active' => 1])) {
+            RateLimiter::hit($key, self::WINDOW_SECONDS);
+            fail(401, 'bad_login', 'Wrong username or password.');
+        }
+        RateLimiter::clear($key);
+        $request->session()->regenerate();   // a new session id at login
+        return ['user' => Auth::guard('web')->user(), 'csrf_token' => csrf_token()];
     }
 
-    $key = $username . '|' . $req->ip;
-    if (count(throttle_recent($key)) >= LOGIN_MAX_TRIES) {
-        fail(429, 'too_many_tries', 'Too many tries. Wait a minute and try again.');
+    public function logout(Request $request): array
+    {
+        Auth::guard('web')->logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+        return ['ok' => true];
     }
 
-    $user = q('SELECT id, name, username, role, is_active, password_hash FROM users WHERE username = ?', [$username])->fetch();
-    $passwordOk = password_verify($password, $user ? $user['password_hash'] : DUMMY_HASH);
-    if (!$passwordOk || !$user || !$user['is_active']) {
-        file_put_contents(throttle_file($key), implode("\n", [...throttle_recent($key), time()]) . "\n", LOCK_EX);
-        fail(401, 'bad_login', 'Wrong username or password.');
+    public function me(Request $request): array
+    {
+        return ['user' => $request->user(), 'csrf_token' => csrf_token()];
     }
-
-    if (is_file(throttle_file($key))) {
-        unlink(throttle_file($key));
-    }
-    if (session_status() === PHP_SESSION_ACTIVE) {
-        session_regenerate_id(true);
-    }
-    $_SESSION = ['uid' => $user['id'], 'csrf' => bin2hex(random_bytes(32))];
-    return ['user' => user_view($user), 'csrf_token' => $_SESSION['csrf']];
-}
-
-function auth_logout(Request $req, array $user): array
-{
-    $_SESSION = [];
-    if (session_status() === PHP_SESSION_ACTIVE) {
-        session_destroy();
-    }
-    return ['ok' => true];
-}
-
-function auth_me(Request $req, array $user): array
-{
-    return ['user' => user_view($user), 'csrf_token' => $_SESSION['csrf']];
 }
 ```
 
-In `site/app/bootstrap.php` replace the file list:
+- [ ] **Step 5: Wire the application and write the routes**
+
+Replace `site/bootstrap/app.php` with:
 
 ```php
-foreach (['db', 'http', 'kernel', 'auth'] as $file) {
-    require __DIR__ . "/$file.php";
-}
+<?php
+/** Wires the application: the API under /api/v1, the session for the web app, the role check, and the one error shape. */
+
+use App\Http\Middleware\ApiHeaders;
+use App\Http\Middleware\Role;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        api: __DIR__.'/../routes/api.php',
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up',
+        apiPrefix: 'api/v1',
+    )
+    ->withMiddleware(function (Middleware $middleware): void {
+        // The web app logs in with a session cookie. Sanctum adds the session and the forgery check to its API calls.
+        $middleware->statefulApi();
+        $middleware->api(append: [ApiHeaders::class]);
+        $middleware->alias(['role' => Role::class]);
+    })
+    ->withExceptions(function (Exceptions $exceptions): void {
+        // Every failure under /api answers in the one error shape. Other pages keep Laravel's own error pages.
+        $exceptions->render(fn (Throwable $e, Request $request) => $request->is('api/*') ? api_error($e) : null);
+    })->create();
+```
+
+Replace `site/routes/api.php` with:
+
+```php
+<?php
+/** The API routes, all under /api/v1. Only the login is open; "role:" says which roles may call a route. */
+declare(strict_types=1);
+
+use App\Http\Controllers as C;
+use Illuminate\Support\Facades\Route;
+
+// An id in a path is a whole number. Anything else is an unknown path.
+Route::pattern('id', '\d{1,18}');
+Route::pattern('itemId', '\d{1,18}');
+
+Route::post('/auth/login', [C\AuthController::class, 'login']);
+
+// Everything below needs a logged-in user who is still switched on. A route without its own "role:" is open to all roles.
+Route::middleware(['auth:sanctum', 'role'])->group(function () {
+    $scanners = 'role:inventory,driver,washing,outbound';
+
+    Route::post('/auth/logout', [C\AuthController::class, 'logout']);
+    Route::get('/auth/me', [C\AuthController::class, 'me']);
+});
 ```
 
 - [ ] **Step 6: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/AuthTest.php`
-Expected: `OK (13 tests, ...)`. If only `test_the_dummy_hash_is_a_real_bcrypt_hash` fails, `DUMMY_HASH` still holds the placeholder text: paste the generated line.
+Run: `(cd site && php artisan test tests/Feature/AuthTest.php)`
+Expected: `Tests:    11 passed`.
 
-- [ ] **Step 7: Write the web entry point**
+The two throttle tests take a few seconds: Laravel makes every failed login take at least 0.2 seconds on purpose.
 
-`index.php` is the only code that touches PHP's request globals. It is checked by hand in Task 4, when a user can be created.
+If every test gets `401` where it expects `200`, the session is not reaching the request: check that `APP_URL` in `site/.env.testing` is `http://127.0.0.1:8000` and that `site/bootstrap/app.php` calls `statefulApi()`.
 
-Create `site/www/index.php`:
+- [ ] **Step 7: HTTPS and the upload limit in the web root**
 
-```php
-<?php
-/** Web entry point: turns the PHP request into a Request, runs dispatch(), and sends JSON or a proof file. */
-declare(strict_types=1);
+Neither file is read by the tests of this task or by PHP's built-in server; both matter on the server at TransIP.
 
-require __DIR__ . '/../app/bootstrap.php';
-
-$production = cfg('APP_ENV') === 'production';
-
-$sessions = storage_dir() . '/sessions';
-if (!is_dir($sessions)) {
-    mkdir($sessions, 0700, true);
-}
-session_save_path($sessions);
-ini_set('session.use_strict_mode', '1');
-ini_set('session.gc_maxlifetime', '43200');   // 12 hours: one working day
-session_name('laundry');
-session_set_cookie_params(['lifetime' => 0, 'path' => '/', 'secure' => $production, 'httponly' => true, 'samesite' => 'Lax']);
-session_start();
-
-header('X-Content-Type-Options: nosniff');
-header('Cache-Control: no-store');
-if ($production) {
-    header('Strict-Transport-Security: max-age=31536000');
-}
-
-function send_json(int $status, array $body): never
-{
-    http_response_code($status);
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    exit;
-}
-
-$prefix = '/api/v1';
-$path = (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-if (!str_starts_with($path, $prefix . '/')) {
-    send_json(404, ['error' => ['code' => 'not_found', 'message' => 'No such path.']]);
-}
-
-// A stop is closed with a form (files plus the JSON in the field "payload"); every other call sends JSON.
-$method = $_SERVER['REQUEST_METHOD'];
-$isForm = str_starts_with($_SERVER['CONTENT_TYPE'] ?? '', 'multipart/form-data');
-$raw = $isForm ? ($_POST['payload'] ?? '') : (string) file_get_contents('php://input');
-$body = $method === 'GET' || $raw === '' ? [] : json_decode($raw, true);
-if (!is_array($body)) {
-    send_json(422, ['error' => ['code' => 'invalid_input', 'message' => 'The request body is not valid JSON.']]);
-}
-
-$files = [];
-foreach ($_FILES as $field => $file) {
-    if (is_string($file['tmp_name']) && $file['error'] === UPLOAD_ERR_OK && is_uploaded_file($file['tmp_name'])) {
-        $files[$field] = $file['tmp_name'];
-    }
-}
-
-[$status, $out] = dispatch(new Request(
-    $method,
-    substr($path, strlen($prefix)),
-    $_GET,
-    $body,
-    $files,
-    ['x-csrf-token' => $_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''],
-    $_SERVER['REMOTE_ADDR'] ?? '',
-));
-
-if ($out instanceof FileOut) {
-    http_response_code($status);
-    header('Content-Type: ' . $out->mime);
-    header('Content-Length: ' . filesize($out->path));
-    readfile($out->path);
-    exit;
-}
-send_json($status, $out);
-```
-
-Create `site/www/.htaccess`:
+In `site/public/.htaccess`, add these lines directly under the line `RewriteEngine On`:
 
 ```apache
-# Web root rules: HTTPS only, /api/* to the PHP entry point, everything else to the React app.
-RewriteEngine On
-
-RewriteCond %{HTTPS} !=on
-RewriteCond %{HTTP:X-Forwarded-Proto} !=https
-RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
-
-RewriteRule ^api/ index.php [L]
-
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteRule ^ index.html [L]
+    # HTTPS only. The second condition is for a proxy that already took the HTTPS off.
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
 ```
 
-Create `site/www/.user.ini`:
+Create `site/public/.user.ini`:
 
 ```ini
 ; A proof photo from a phone is bigger than PHP's 2 MB default.
@@ -1256,21 +1200,18 @@ upload_max_filesize = 6M
 post_max_size = 8M
 ```
 
-Run: `php -l site/www/index.php`
-Expected: `No syntax errors detected in site/www/index.php`.
-
 - [ ] **Step 8: Run all tests**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (21 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    19 passed`.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.1-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.1"/' composer.json
-git add site/app/http.php site/app/kernel.php site/app/routes.php site/app/auth.php site/app/bootstrap.php site/www/index.php site/www/.htaccess site/www/.user.ini tests/AuthTest.php README.md composer.json
-git commit -m "Add HTTP kernel and login at 0.4.1."
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.1"/' site/composer.json
+git add site README.md
+git commit -m "Add routing, the error shape and login at 0.4.1."
 ```
 
 ---
@@ -1278,12 +1219,12 @@ git commit -m "Add HTTP kernel and login at 0.4.1."
 ### Task 3: Areas, customers, buildings, zones and mat types
 
 **Files:**
-- Create: `site/app/refdata.php`
-- Modify: `site/app/bootstrap.php` (file list), `site/app/routes.php`
-- Test: `tests/RefdataTest.php`
+- Create: `site/app/Http/Controllers/RefdataController.php`
+- Modify: `site/routes/api.php`
+- Test: `site/tests/Feature/RefdataTest.php`
 
 **Interfaces:**
-- Consumes: `q()`, `marks()`, `fail()`, `str_in()`, `int_in()`, `bool_in()`, the route table format from Task 2.
+- Consumes: `fail()`, `$request->validate()`, the `role` middleware and the route group from Task 2.
 - Produces routes, all answering `{"rows": [...]}` for a list and `{"row": {...}}` for one record, with `is_active` as true or false:
   - `GET, POST /areas`, `PATCH /areas/{id}` — office
   - `GET, POST /customers`, `PATCH /customers/{id}` — office
@@ -1293,12 +1234,16 @@ git commit -m "Add HTTP kernel and login at 0.4.1."
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/RefdataTest.php`:
+Create `site/tests/Feature/RefdataTest.php`:
 
 ```php
 <?php
 /** Office management of areas, customers, buildings, zones and mat types. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Tests\ApiTestCase;
 
 final class RefdataTest extends ApiTestCase
 {
@@ -1386,163 +1331,147 @@ final class RefdataTest extends ApiTestCase
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/RefdataTest.php`
+Run: `(cd site && php artisan test tests/Feature/RefdataTest.php)`
 Expected: FAIL, every test gets `404 not_found` where it expects another status.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `site/app/refdata.php`:
+Create `site/app/Http/Controllers/RefdataController.php`:
 
 ```php
 <?php
 /** Areas, customers, buildings, zones and mat types: five small tables the office manages the same way. */
 declare(strict_types=1);
 
-// Per resource: its table, the column that points to its parent (or null), and its editable fields
-// as name => [type, maximum length, required]. Table and column names come only from this constant.
-const REFDATA = [
-    'areas' => ['table' => 'areas', 'parent' => null, 'fields' => [
-        'name' => ['str', 80, true],
-    ]],
-    'customers' => ['table' => 'customers', 'parent' => null, 'fields' => [
-        'name' => ['str', 160, true],
-        'contact_name' => ['str', 120, false],
-        'contact_phone' => ['str', 40, false],
-        'contact_email' => ['str', 190, false],
-        'is_active' => ['bool', 0, false],
-    ]],
-    'item-types' => ['table' => 'item_types', 'parent' => null, 'fields' => [
-        'name' => ['str', 120, true],
-        'is_active' => ['bool', 0, false],
-    ]],
-    'buildings' => ['table' => 'buildings', 'parent' => 'customer_id', 'fields' => [
-        'area_id' => ['int', 0, true],
-        'name' => ['str', 160, true],
-        'street' => ['str', 160, true],
-        'postcode' => ['str', 12, true],
-        'city' => ['str', 80, true],
-        'is_active' => ['bool', 0, false],
-    ]],
-    'zones' => ['table' => 'zones', 'parent' => 'building_id', 'fields' => [
-        'name' => ['str', 120, true],
-        'is_active' => ['bool', 0, false],
-    ]],
-];
+namespace App\Http\Controllers;
 
-/** Reads the fields that were sent. On create every required field must be there. */
-function ref_values(string $resource, array $body, bool $creating): array
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+final class RefdataController extends Controller
 {
-    $values = [];
-    foreach (REFDATA[$resource]['fields'] as $name => [$type, $max, $required]) {
-        if (!array_key_exists($name, $body)) {
-            if ($creating && $required) {
-                fail(422, 'invalid_input', "$name is required.");
-            }
-            continue;
+    // Per resource: its table, the column that points to its parent (or null), and the rules of its fields.
+    // Table and column names come only from this constant, never from a request.
+    // "sometimes|required" means: may be left out, but when it is sent it must have a value.
+    private const RESOURCES = [
+        'areas' => ['table' => 'areas', 'parent' => null, 'rules' => [
+            'name' => 'required|string|max:80',
+        ]],
+        'customers' => ['table' => 'customers', 'parent' => null, 'rules' => [
+            'name' => 'required|string|max:160',
+            'contact_name' => 'nullable|string|max:120',
+            'contact_phone' => 'nullable|string|max:40',
+            'contact_email' => 'nullable|string|max:190',
+            'is_active' => 'sometimes|required|boolean',
+        ]],
+        'item-types' => ['table' => 'item_types', 'parent' => null, 'rules' => [
+            'name' => 'required|string|max:120',
+            'is_active' => 'sometimes|required|boolean',
+        ]],
+        'buildings' => ['table' => 'buildings', 'parent' => 'customer_id', 'rules' => [
+            'area_id' => 'required|integer|min:0',
+            'name' => 'required|string|max:160',
+            'street' => 'required|string|max:160',
+            'postcode' => 'required|string|max:12',
+            'city' => 'required|string|max:80',
+            'is_active' => 'sometimes|required|boolean',
+        ]],
+        'zones' => ['table' => 'zones', 'parent' => 'building_id', 'rules' => [
+            'name' => 'required|string|max:120',
+            'is_active' => 'sometimes|required|boolean',
+        ]],
+    ];
+
+    /** The resource a route is for. Each route names it itself, see routes/api.php. */
+    private function resource(Request $request): array
+    {
+        return self::RESOURCES[$request->route('resource')];
+    }
+
+    private function view(object $row): array
+    {
+        $row = (array) $row;
+        if (array_key_exists('is_active', $row)) {
+            $row['is_active'] = (bool) $row['is_active'];
         }
-        $values[$name] = match ($type) {
-            'str' => str_in($body, $name, $max, $required),
-            'int' => int_in($body, $name, $required),
-            'bool' => bool_in($body, $name),
-        };
+        return $row;
     }
-    return $values;
-}
 
-function ref_row(array $row): array
-{
-    if (array_key_exists('is_active', $row)) {
-        $row['is_active'] = (bool) $row['is_active'];
+    private function find(string $table, int $id): array
+    {
+        $row = DB::table($table)->where('id', $id)->first();
+        if ($row === null) {
+            fail(404, 'not_found', 'No such record.');
+        }
+        return $this->view($row);
     }
-    return $row;
-}
 
-function ref_get(string $resource, int $id): array
-{
-    $table = REFDATA[$resource]['table'];
-    $row = q("SELECT * FROM $table WHERE id = ?", [$id])->fetch();
-    if (!$row) {
-        fail(404, 'not_found', 'No such record.');
+    public function index(Request $request): array
+    {
+        ['table' => $table, 'parent' => $parent] = $this->resource($request);
+        $rows = DB::table($table)
+            ->when($parent !== null, fn ($query) => $query->where($parent, (int) $request->route('id')))
+            ->orderBy('name')
+            ->get();
+        return ['rows' => $rows->map(fn (object $row) => $this->view($row))->all()];
     }
-    return ref_row($row);
-}
 
-function ref_list(string $resource, ?int $parentId = null): array
-{
-    ['table' => $table, 'parent' => $parent] = REFDATA[$resource];
-    $rows = $parent === null
-        ? q("SELECT * FROM $table ORDER BY name")->fetchAll()
-        : q("SELECT * FROM $table WHERE $parent = ? ORDER BY name", [$parentId])->fetchAll();
-    return ['rows' => array_map('ref_row', $rows)];
-}
-
-function ref_create(string $resource, array $body, ?int $parentId = null): array
-{
-    ['table' => $table, 'parent' => $parent] = REFDATA[$resource];
-    $values = ref_values($resource, $body, true);
-    if ($parent !== null) {
-        $values[$parent] = $parentId;
+    public function store(Request $request): array
+    {
+        ['table' => $table, 'parent' => $parent, 'rules' => $rules] = $this->resource($request);
+        $values = $request->validate($rules);
+        if ($parent !== null) {
+            $values[$parent] = (int) $request->route('id');
+        }
+        return ['row' => $this->find($table, DB::table($table)->insertGetId($values))];
     }
-    $columns = array_keys($values);
-    q("INSERT INTO $table (" . implode(', ', $columns) . ') VALUES (' . marks($columns) . ')', array_values($values));
-    return ['row' => ref_get($resource, (int) db()->lastInsertId())];
-}
 
-function ref_update(string $resource, int $id, array $body): array
-{
-    $table = REFDATA[$resource]['table'];
-    ref_get($resource, $id);
-    $values = ref_values($resource, $body, false);
-    if ($values) {
-        $sets = implode(', ', array_map(fn (string $column) => "$column = ?", array_keys($values)));
-        q("UPDATE $table SET $sets WHERE id = ?", [...array_values($values), $id]);
+    /** Changes only the fields that were sent. */
+    public function update(Request $request): array
+    {
+        ['table' => $table, 'rules' => $rules] = $this->resource($request);
+        $id = (int) $request->route('id');
+        $this->find($table, $id);
+        $values = $request->validate(array_map(fn (string $rule) => "sometimes|$rule", $rules));
+        if ($values !== []) {
+            DB::table($table)->where('id', $id)->update($values);
+        }
+        return ['row' => $this->find($table, $id)];
     }
-    return ['row' => ref_get($resource, $id)];
 }
 ```
 
-In `site/app/bootstrap.php` replace the file list:
+A name that exists, or an area that does not exist, is not checked here: the database refuses it and `api_error()` turns that into `409 duplicate` or `422 invalid_reference`.
+
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-foreach (['db', 'http', 'kernel', 'auth', 'refdata'] as $file) {
-    require __DIR__ . "/$file.php";
-}
-```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
-
-```php
-    ['GET',   '/areas',                    [$O],     fn ($r, $u) => ref_list('areas')],
-    ['POST',  '/areas',                    [$O],     fn ($r, $u) => ref_create('areas', $r->body)],
-    ['PATCH', '/areas/{id}',               [$O],     fn ($r, $u, $id) => ref_update('areas', $id, $r->body)],
-    ['GET',   '/customers',                [$O],     fn ($r, $u) => ref_list('customers')],
-    ['POST',  '/customers',                [$O],     fn ($r, $u) => ref_create('customers', $r->body)],
-    ['PATCH', '/customers/{id}',           [$O],     fn ($r, $u, $id) => ref_update('customers', $id, $r->body)],
-    ['GET',   '/item-types',               [$O, $I], fn ($r, $u) => ref_list('item-types')],
-    ['POST',  '/item-types',               [$O],     fn ($r, $u) => ref_create('item-types', $r->body)],
-    ['PATCH', '/item-types/{id}',          [$O],     fn ($r, $u, $id) => ref_update('item-types', $id, $r->body)],
-    ['GET',   '/customers/{id}/buildings', [$O],     fn ($r, $u, $id) => ref_list('buildings', $id)],
-    ['POST',  '/customers/{id}/buildings', [$O],     fn ($r, $u, $id) => ref_create('buildings', $r->body, $id)],
-    ['PATCH', '/buildings/{id}',           [$O],     fn ($r, $u, $id) => ref_update('buildings', $id, $r->body)],
-    ['GET',   '/buildings/{id}/zones',     [$O],     fn ($r, $u, $id) => ref_list('zones', $id)],
-    ['POST',  '/buildings/{id}/zones',     [$O],     fn ($r, $u, $id) => ref_create('zones', $r->body, $id)],
-    ['PATCH', '/zones/{id}',               [$O],     fn ($r, $u, $id) => ref_update('zones', $id, $r->body)],
+    // Areas, customers, mat types, buildings and zones. A building hangs under a customer, a zone under a building.
+    $refdata = ['areas' => null, 'customers' => null, 'item-types' => null, 'buildings' => 'customers', 'zones' => 'buildings'];
+    foreach ($refdata as $resource => $parent) {
+        $list = $parent === null ? "/$resource" : "/$parent/{id}/$resource";
+        $read = $resource === 'item-types' ? 'role:office,inventory' : 'role:office';
+        Route::get($list, [C\RefdataController::class, 'index'])->defaults('resource', $resource)->middleware($read);
+        Route::post($list, [C\RefdataController::class, 'store'])->defaults('resource', $resource)->middleware('role:office');
+        Route::patch("/$resource/{id}", [C\RefdataController::class, 'update'])->defaults('resource', $resource)->middleware('role:office');
+    }
 ```
 
 - [ ] **Step 4: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/RefdataTest.php`
-Expected: `OK (9 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/RefdataTest.php)`
+Expected: `Tests:    9 passed`.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (30 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    28 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.2-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.2"/' composer.json
-git add site/app/refdata.php site/app/bootstrap.php site/app/routes.php tests/RefdataTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.2"/' site/composer.json
+git add site README.md
 git commit -m "Add office management of customers, buildings, zones and mat types at 0.4.2."
 ```
 
@@ -1551,25 +1480,31 @@ git commit -m "Add office management of customers, buildings, zones and mat type
 ### Task 4: Users and the first office user
 
 **Files:**
-- Create: `site/app/users.php`, `site/bin/create-office-user.php`
-- Modify: `site/app/bootstrap.php` (file list), `site/app/routes.php`
-- Test: `tests/UsersTest.php`
+- Replace: `site/app/Models/User.php` (adds `register()`), `site/routes/console.php`
+- Create: `site/app/Http/Controllers/UserController.php`
+- Modify: `site/routes/api.php`
+- Test: `site/tests/Feature/UsersTest.php`
 
 **Interfaces:**
-- Consumes: `q()`, `fail()`, `str_in()`, `enum_in()`, `bool_in()`, `user_view()`, `ROLES`, `ApiError`.
+- Consumes: `User`, `fail()`, `$request->validate()`, the route group.
 - Produces:
-  - `user_insert(array $in): array` — validates `name`, `username`, `password`, `role`; returns `user_view`
+  - `User::register(array $in): User` — validates `name`, `username`, `password`, `role`, stores the user and returns it. A bad value throws Laravel's `ValidationException` (`422 invalid_input` in the API)
   - Routes, office only: `GET /users` → `{"rows": [...]}`, `POST /users` → `{"user": {...}}`, `PATCH /users/{id}` → `{"user": {...}}`
-  - CLI `php site/bin/create-office-user.php` — reads name, username and password from standard input
+  - Command `php artisan laundry:office-user` — asks for name, username and password (hidden while typing)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/UsersTest.php`:
+Create `site/tests/Feature/UsersTest.php`:
 
 ```php
 <?php
 /** User management by the office, and the one-time command that creates the first office user. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class UsersTest extends ApiTestCase
 {
@@ -1585,7 +1520,7 @@ final class UsersTest extends ApiTestCase
         $this->assertSame(['id', 'name', 'username', 'role', 'is_active'], array_keys($user));
         $this->assertSame('dana.d', $user['username']);
 
-        $_SESSION = [];
+        $this->logout();
         $out = $this->ok($this->api('POST', '/auth/login', ['username' => 'dana.d', 'password' => 'long-password-1']));
         $this->assertSame('driver', $out['user']['role']);
     }
@@ -1614,7 +1549,7 @@ final class UsersTest extends ApiTestCase
         $user = $this->ok($this->api('PATCH', "/users/{$this->users['driver']}", ['is_active' => false]))['user'];
         $this->assertFalse($user['is_active']);
 
-        $_SESSION = [];
+        $this->logout();
         $this->assertError(401, 'bad_login',
             $this->api('POST', '/auth/login', ['username' => 'driver', 'password' => self::PASSWORD]));
     }
@@ -1626,7 +1561,7 @@ final class UsersTest extends ApiTestCase
             ['role' => 'inventory', 'name' => 'Olga', 'password' => 'another-password-2']))['user'];
         $this->assertSame(['inventory', 'Olga'], [$user['role'], $user['name']]);
 
-        $_SESSION = [];
+        $this->logout();
         $this->ok($this->api('POST', '/auth/login', ['username' => 'outbound', 'password' => 'another-password-2']));
     }
 
@@ -1649,217 +1584,252 @@ final class UsersTest extends ApiTestCase
 
     public function test_the_command_creates_the_first_office_user(): void
     {
-        // The child process is told explicitly to use the test settings, so it can never touch the real database.
-        $env = ['ENV_FILE' => '.env.test', 'APP_ENV' => 'test'] + getenv();
-        $process = proc_open([PHP_BINARY, __DIR__ . '/../site/bin/create-office-user.php'],
-            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
-        fwrite($pipes[0], "First Office\nfirst.office\nlong-password-1\n");
-        fclose($pipes[0]);
-        $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $this->assertSame(0, proc_close($process), $output);
+        $this->artisan('laundry:office-user')
+            ->expectsQuestion('Full name', 'First Office')
+            ->expectsQuestion('Username', 'First.Office')
+            ->expectsQuestion('Password (10 to 72 characters)', 'long-password-1')
+            ->expectsOutputToContain('Created office user first.office.')
+            ->assertExitCode(0);
 
         $out = $this->ok($this->api('POST', '/auth/login', ['username' => 'first.office', 'password' => 'long-password-1']));
         $this->assertSame('office', $out['user']['role']);
+    }
+
+    public function test_the_command_refuses_a_weak_password_and_a_name_that_exists(): void
+    {
+        $this->artisan('laundry:office-user')
+            ->expectsQuestion('Full name', 'First Office')
+            ->expectsQuestion('Username', 'first.office')
+            ->expectsQuestion('Password (10 to 72 characters)', 'short')
+            ->assertExitCode(1);
+        $this->artisan('laundry:office-user')
+            ->expectsQuestion('Full name', 'Second Office')
+            ->expectsQuestion('Username', 'office')
+            ->expectsQuestion('Password (10 to 72 characters)', 'long-password-1')
+            ->assertExitCode(1);
+        $this->assertSame(6, (int) DB::scalar('SELECT COUNT(*) FROM users'));
     }
 }
 ```
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/UsersTest.php`
-Expected: FAIL: the API tests get `404 not_found`, the command test fails with `Could not open input file`.
+Run: `(cd site && php artisan test tests/Feature/UsersTest.php)`
+Expected: FAIL: the API tests get `404 not_found`, the two command tests fail because the command `laundry:office-user` does not exist.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `site/app/users.php`:
+Replace `site/app/Models/User.php` with:
 
 ```php
 <?php
-/** User management by the office. Passwords are stored only as a hash and never leave the server. */
+/** A person who logs in. One role per user. The password is stored only as a hash and never leaves the server. */
 declare(strict_types=1);
 
-function username_in(array $in): string
-{
-    $username = strtolower(str_in($in, 'username', 60));
-    if (!preg_match('/^[a-z0-9._-]{3,60}$/', $username)) {
-        fail(422, 'invalid_input', 'username must be 3 to 60 letters, digits, dots, dashes or underscores.');
-    }
-    return $username;
-}
+namespace App\Models;
 
-/** bcrypt reads only the first 72 bytes, so a longer password would be silently cut. */
-function password_in(array $in): string
-{
-    $password = $in['password'] ?? null;
-    if (!is_string($password) || strlen($password) < 10 || strlen($password) > 72) {
-        fail(422, 'invalid_input', 'password must have 10 to 72 characters.');
-    }
-    return $password;
-}
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
+use Laravel\Sanctum\HasApiTokens;
 
-function user_by_id(int $id): array
+final class User extends Authenticatable
 {
-    $user = q('SELECT id, name, username, role, is_active FROM users WHERE id = ?', [$id])->fetch();
-    if (!$user) {
-        fail(404, 'not_found', 'No such user.');
-    }
-    return user_view($user);
-}
+    // Not used yet: it is what lets the handheld log in with a token later, without a new build.
+    use HasApiTokens;
 
-/** Validates and stores a new user. Used by POST /users and by bin/create-office-user.php. */
-function user_insert(array $in): array
-{
-    $name = str_in($in, 'name', 120);
-    $username = username_in($in);
-    $role = enum_in($in, 'role', ROLES);
-    $hash = password_hash(password_in($in), PASSWORD_DEFAULT);
-    q('INSERT INTO users (name, username, password_hash, role) VALUES (?, ?, ?, ?)', [$name, $username, $hash, $role]);
-    return user_by_id((int) db()->lastInsertId());
-}
+    public const ROLES = ['office', 'inventory', 'driver', 'washing', 'outbound'];
 
-function users_list(Request $req, array $user): array
-{
-    $rows = q('SELECT id, name, username, role, is_active FROM users ORDER BY name')->fetchAll();
-    return ['rows' => array_map('user_view', $rows)];
-}
+    // bcrypt reads only the first 72 bytes, so a longer password would be silently cut.
+    public const PASSWORD_RULE = 'string|min:10|max:72';
 
-function users_create(Request $req, array $user): array
-{
-    return ['user' => user_insert($req->body)];
-}
+    /** The schema names the column password_hash. Laravel's login finds the hash through this name. */
+    protected $authPasswordName = 'password_hash';
 
-function users_update(Request $req, array $me, int $id): array
-{
-    user_by_id($id);
-    $in = $req->body;
-    $set = [];
-    if (array_key_exists('name', $in)) {
-        $set['name'] = str_in($in, 'name', 120);
+    /** Exactly what the API shows of a user. */
+    protected $visible = ['id', 'name', 'username', 'role', 'is_active'];
+
+    protected $casts = ['is_active' => 'boolean'];
+
+    /** Validates and stores a new user. Used by POST /users and by the command laundry:office-user. */
+    public static function register(array $in): self
+    {
+        if (is_string($in['username'] ?? null)) {
+            $in['username'] = strtolower(trim($in['username']));
+        }
+        $data = Validator::make($in, [
+            'name' => 'required|string|max:120',
+            'username' => ['required', 'string', 'regex:/^[a-z0-9._-]{3,60}$/'],
+            'password' => 'required|' . self::PASSWORD_RULE,
+            'role' => ['required', Rule::in(self::ROLES)],
+        ], ['username.regex' => 'The username must be 3 to 60 letters, digits, dots, dashes or underscores.'])->validate();
+
+        $user = new self;
+        $user->forceFill([
+            'name' => trim($data['name']),
+            'username' => $data['username'],
+            'password_hash' => Hash::make($data['password']),
+            'role' => $data['role'],
+        ])->save();
+        return $user->fresh();
     }
-    if (array_key_exists('role', $in)) {
-        $set['role'] = enum_in($in, 'role', ROLES);
-    }
-    if (array_key_exists('is_active', $in)) {
-        $set['is_active'] = bool_in($in, 'is_active');
-    }
-    if (array_key_exists('password', $in)) {
-        $set['password_hash'] = password_hash(password_in($in), PASSWORD_DEFAULT);
-    }
-    $demoted = ($set['role'] ?? 'office') !== 'office' || ($set['is_active'] ?? true) === false;
-    if ($id === $me['id'] && $demoted) {
-        fail(422, 'self_lockout', 'You cannot switch off or demote yourself.');
-    }
-    if ($set) {
-        $sets = implode(', ', array_map(fn (string $column) => "$column = ?", array_keys($set)));
-        q("UPDATE users SET $sets WHERE id = ?", [...array_values($set), $id]);
-    }
-    return ['user' => user_by_id($id)];
 }
 ```
 
-Create `site/bin/create-office-user.php`:
+Create `site/app/Http/Controllers/UserController.php`:
 
 ```php
 <?php
-/** One-time command that creates the first office user. Run on the server: php site/bin/create-office-user.php */
+/** User management by the office. No delete, only switching off. */
 declare(strict_types=1);
 
-if (PHP_SAPI !== 'cli') {
-    http_response_code(404);
-    exit;
-}
+namespace App\Http\Controllers;
 
-require __DIR__ . '/../app/bootstrap.php';
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 
-$ask = function (string $label): string {
-    fwrite(STDOUT, "$label: ");
-    return trim((string) fgets(STDIN));
-};
+final class UserController extends Controller
+{
+    public function index(): array
+    {
+        return ['rows' => User::orderBy('name')->get()];
+    }
 
-try {
-    $user = user_insert([
-        'name' => $ask('Full name'),
-        'username' => $ask('Username'),
-        // ponytail: the password is visible while typing. Hide it if this is ever run on a shared screen.
-        'password' => $ask('Password (10 to 72 characters, visible while you type)'),
-        'role' => 'office',
-    ]);
-    fwrite(STDOUT, "Created office user {$user['username']}.\n");
-} catch (ApiError $e) {
-    fwrite(STDERR, $e->getMessage() . "\n");
-    exit(1);
-} catch (PDOException $e) {
-    fwrite(STDERR, "Could not create the user. Does the username already exist?\n");
-    exit(1);
+    public function store(Request $request): array
+    {
+        return ['user' => User::register($request->all())];
+    }
+
+    /** Changes only the fields that were sent. */
+    public function update(Request $request, int $id): array
+    {
+        $user = User::find($id);
+        if ($user === null) {
+            fail(404, 'not_found', 'No such user.');
+        }
+        $in = $request->validate([
+            'name' => 'sometimes|required|string|max:120',
+            'role' => ['sometimes', 'required', Rule::in(User::ROLES)],
+            'is_active' => 'sometimes|required|boolean',
+            'password' => 'sometimes|required|' . User::PASSWORD_RULE,
+        ]);
+
+        $demoted = ($in['role'] ?? 'office') !== 'office' || !($in['is_active'] ?? true);
+        if ($user->is($request->user()) && $demoted) {
+            fail(422, 'self_lockout', 'You cannot switch off or demote yourself.');
+        }
+        if (isset($in['password'])) {
+            $in['password_hash'] = Hash::make($in['password']);
+            unset($in['password']);
+        }
+        $user->forceFill($in)->save();
+        return ['user' => $user->fresh()];
+    }
 }
 ```
 
-In `site/app/bootstrap.php` replace the file list:
+Replace `site/routes/console.php` with:
 
 ```php
-foreach (['db', 'http', 'kernel', 'auth', 'refdata', 'users'] as $file) {
-    require __DIR__ . "/$file.php";
-}
+<?php
+/** Commands for the server's command line. */
+declare(strict_types=1);
+
+use App\Models\User;
+use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Validation\ValidationException;
+
+// Creates the first office user. Run once on the server: php artisan laundry:office-user
+// No user is seeded, because a password must never sit in a file.
+Artisan::command('laundry:office-user', function () {
+    try {
+        $user = User::register([
+            'name' => $this->ask('Full name'),
+            'username' => $this->ask('Username'),
+            'password' => $this->secret('Password (10 to 72 characters)'),
+            'role' => 'office',
+        ]);
+    } catch (ValidationException $e) {
+        $this->error(implode(' ', $e->validator->errors()->all()));
+        return 1;
+    } catch (UniqueConstraintViolationException) {
+        $this->error('That username already exists.');
+        return 1;
+    }
+    $this->info("Created office user {$user->username}.");
+    return 0;
+})->purpose('Create the first office user');
 ```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-    ['GET',   '/users',      [$O], 'users_list'],
-    ['POST',  '/users',      [$O], 'users_create'],
-    ['PATCH', '/users/{id}', [$O], 'users_update'],
+
+    Route::get('/users', [C\UserController::class, 'index'])->middleware('role:office');
+    Route::post('/users', [C\UserController::class, 'store'])->middleware('role:office');
+    Route::patch('/users/{id}', [C\UserController::class, 'update'])->middleware('role:office');
 ```
 
 - [ ] **Step 4: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/UsersTest.php`
-Expected: `OK (8 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/UsersTest.php)`
+Expected: `Tests:    9 passed`.
 
-- [ ] **Step 5: Check the web entry point by hand**
+- [ ] **Step 5: Check a real login over HTTP by hand**
 
-This is the first moment a real HTTP login is possible. It runs against the test database: `ENV_FILE=.env.test` makes the server and the command read `site/.env.test`.
+The tests call the API in-process. This is the first moment a real HTTP login is possible, with a real cookie and the real forgery check. It runs against the test database: `APP_ENV=testing` makes Laravel read `site/.env.testing`.
 
 Start the server in the background (in the Bash tool: `run_in_background: true`):
 
 ```bash
-ENV_FILE=.env.test php -S 127.0.0.1:8080 site/www/index.php
+(cd site && APP_ENV=testing php -S 127.0.0.1:8000 -t public)
 ```
 
 Then run:
 
 ```bash
-printf 'Smoke Office\nsmoke\nsmoke-password-1\n' | ENV_FILE=.env.test php site/bin/create-office-user.php
+(cd site && php artisan tinker --env=testing --execute="App\Models\User::register(['name' => 'Smoke Office', 'username' => 'smoke', 'password' => 'smoke-password-1', 'role' => 'office']);")
 JAR=$(mktemp)
-curl -s -i -c "$JAR" -H 'Content-Type: application/json' \
-  -d '{"username":"smoke","password":"smoke-password-1"}' http://127.0.0.1:8080/api/v1/auth/login
-curl -s -b "$JAR" http://127.0.0.1:8080/api/v1/auth/me
-curl -s -b "$JAR" -X POST http://127.0.0.1:8080/api/v1/auth/logout
-curl -s http://127.0.0.1:8080/api/v1/auth/me
-curl -s -H 'Content-Type: application/json' -d '{broken' http://127.0.0.1:8080/api/v1/auth/login
+API=http://127.0.0.1:8000/api/v1
+WEB=(-H 'Origin: http://127.0.0.1:8000' -H 'Accept: application/json' -H 'Content-Type: application/json')
+SAME=(-H 'Sec-Fetch-Site: same-origin')
+LOGIN='{"username":"smoke","password":"smoke-password-1"}'
+curl -s -i -c "$JAR" "${WEB[@]}" "${SAME[@]}" -d "$LOGIN" $API/auth/login
+curl -s -b "$JAR" "${WEB[@]}" $API/auth/me; echo
+curl -s -b "$JAR" "${WEB[@]}" -X POST $API/auth/logout; echo
+curl -s -b "$JAR" "${WEB[@]}" "${SAME[@]}" -X POST $API/auth/logout; echo
+curl -s "${WEB[@]}" $API/auth/me; echo
+curl -s "${WEB[@]}" "${SAME[@]}" -d '{broken' $API/auth/login; echo
+curl -s -H 'Accept: application/json' -H 'Content-Type: application/json' "${SAME[@]}" -d "$LOGIN" $API/auth/login; echo
 rm "$JAR"
 ```
 
-Expected, in order:
-1. The three prompts on one line, ending in `Created office user smoke.`
-2. `HTTP/1.1 200 OK`, a header `Set-Cookie: laundry=...; path=/; HttpOnly; SameSite=Lax`, the headers `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`, and a JSON body with `"user"` and `"csrf_token"`.
-3. The same user as JSON.
-4. `{"error":{"code":"csrf","message":"Missing or wrong CSRF token."}}` (the logout sent no token).
-5. `{"error":{"code":"not_logged_in","message":"Log in first."}}`
-6. `{"error":{"code":"invalid_input","message":"The request body is not valid JSON."}}`
+`Origin` is what a browser sends from the web app's own address, and `Sec-Fetch-Site: same-origin` is how a browser marks a request the page itself made. curl has to say both by hand.
 
-Stop the background server. If any answer differs, fix `site/www/index.php` and repeat this step.
+Expected, in order:
+1. `HTTP/1.1 200 OK`; a `Set-Cookie` header for the session cookie (its name starts with `laundry`) with `httponly` and `samesite=lax`; the headers `X-Content-Type-Options: nosniff` and a `Cache-Control` that contains `no-store`; and a JSON body with `"user"` and `"csrf_token"`.
+2. The same user as JSON.
+3. `{"error":{"code":"csrf","message":"Missing or wrong CSRF token."}}` (this logout carried no token and was not marked same-origin).
+4. `{"ok":true}`
+5. `{"error":{"code":"not_logged_in","message":"Log in first."}}`
+6. `{"error":{"code":"invalid_input","message":"The username field is required."}}`
+7. `{"error":{"code":"csrf","message":"Log in from the web app."}}` (no `Origin`, so no session).
+
+Stop the background server. If an answer differs, fix the file that owns it (`site/bootstrap/app.php` for the session and the middleware, `site/app/helpers.php` for the error shape, `AuthController` for the login) and repeat this step. The user `smoke` stays in the test database until the next test run rebuilds it.
 
 - [ ] **Step 6: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (38 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    37 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.3-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.3"/' composer.json
-git add site/app/users.php site/bin/create-office-user.php site/app/bootstrap.php site/app/routes.php tests/UsersTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.3"/' site/composer.json
+git add site README.md
 git commit -m "Add user management and the first-office-user command at 0.4.3."
 ```
 
@@ -1868,34 +1838,39 @@ git commit -m "Add user management and the first-office-user command at 0.4.3."
 ### Task 5: Tag reads, lookup, simulator list and mat registration
 
 **Files:**
-- Create: `site/app/scan.php`, `site/app/items.php`
-- Modify: `site/app/bootstrap.php` (file list), `site/app/routes.php`
-- Test: `tests/ScanTest.php`
+- Create: `site/app/Support/Scan.php`
+- Create: `site/app/Http/Controllers/ScanController.php`, `site/app/Http/Controllers/ItemController.php`
+- Modify: `site/routes/api.php`
+- Test: `site/tests/Feature/ScanTest.php`
 
 **Interfaces:**
-- Consumes: `q()`, `tx()`, `marks()`, `cfg()`, `fail()`, `str_in()`, `int_in()`, `enum_in()`.
-- Produces:
-  - `const ITEM_STATUSES` (the eleven statuses), `const ITEM_SELECT` (`SELECT i.*, t.name AS type_name FROM items i JOIN item_types t ...`)
-  - `simulator_on(): bool`
-  - `hex_in(array $in, string $key): string` — uppercase hex, 8 to 64 characters, else 422 `invalid_tag`
-  - `source_in(array $in): string` — `simulator` or `c72`
-  - `reads_in(array $in): array` — unique uppercase EPCs from `{"reads": [{"epc": ...}]}`, in first-heard order
-  - `items_by_epc(array $epcs, bool $lock = false): array` — item rows keyed by EPC, each with `type_name`; `$lock` adds `FOR UPDATE`
-  - `item_by_id(int $id, bool $lock = false): array` — 404 when unknown
-  - `item_view(array $item): array` — `id, sku, type, status, wash_count, current_wash_date, previous_wash_date`
-  - `log_event(array $item, int $userId, string $type, string $to, string $source, array $extra = []): void` — `from_status` is `$item['status']`; `$extra` may hold `handover_id`, `task_id`, `zone_id`, `note`
-  - `scan_result(string $epc, string $result, ?array $item, ?string $reason = null): array`
+- Consumes: `rows()`, `row()`, `marks()`, `fail()`, `config('laundry.simulator')`, `DB::transaction()`.
+- Produces, all static on `App\Support\Scan`:
+  - `Scan::STATUSES` (the eleven statuses), `Scan::HELD` (`out_for_delivery`, `refused`, `collected`: the statuses in which a driver carries the mat), `Scan::ITEM_SELECT` (`SELECT i.*, t.name AS type_name FROM items i JOIN item_types t ...`)
+  - `Scan::hex(mixed $value, string $key): string` — uppercase hex, 8 to 64 characters, else 422 `invalid_tag`
+  - `Scan::source(array $in): string` — `simulator` or `c72`
+  - `Scan::reads(array $in): array` — unique uppercase EPCs from `{"reads": [{"epc": ...}]}`, in first-heard order
+  - `Scan::itemsByEpc(array $epcs, bool $lock = false): array` — item rows keyed by EPC, each with `type_name`; `$lock` adds `FOR UPDATE`
+  - `Scan::itemById(int $id, bool $lock = false): array` — 404 when unknown
+  - `Scan::view(array $item): array` — `id, sku, type, status, wash_count, current_wash_date, previous_wash_date`
+  - `Scan::log(array $item, int $userId, string $type, string $to, string $source, array $extra = []): void` — `from_status` is `$item['status']`; `$extra` may hold `handover_id`, `task_id`, `zone_id`, `note`
+  - `Scan::result(string $epc, string $result, ?array $item, ?string $reason = null): array`
   - Every scan endpoint answers `{"results": [{"epc", "result", "item", "reason"?}], "missing": [...]}` with `result` one of `found`, `not_on_list`, `unknown`, `rejected`
   - Routes: `POST /scan/lookup` (inventory, driver, washing, outbound), `GET /sim/items` (same four), `POST /items` (inventory)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/ScanTest.php`:
+Create `site/tests/Feature/ScanTest.php`:
 
 ```php
 <?php
 /** Tag reads, the lookup that changes nothing, the simulator's mat list, and registering a new mat. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class ScanTest extends ApiTestCase
 {
@@ -1925,12 +1900,12 @@ final class ScanTest extends ApiTestCase
             [$out['results'][0]['item']['sku'], $out['results'][0]['item']['type'], $out['results'][0]['item']['status']]);
         $this->assertNull($out['results'][2]['item']);
         $this->assertSame([], $out['missing']);
-        $this->assertSame(0, (int) q('SELECT COUNT(*) FROM item_events')->fetchColumn());
+        $this->assertSame(0, (int) DB::scalar('SELECT COUNT(*) FROM item_events'));
     }
 
     public function test_a_tag_id_made_of_digits_only_is_found(): void
     {
-        q("INSERT INTO items (item_type_id, sku, epc, tid_primary, tid_secondary)
+        DB::statement("INSERT INTO items (item_type_id, sku, epc, tid_primary, tid_secondary)
            VALUES (1, 'DIGITS-8', '12345678', 'A0000001', 'A0000002'),
                   (1, 'DIGITS-24', '123456789012345678901234', 'A0000003', 'A0000004')");
         $this->loginAs('inventory');
@@ -1969,14 +1944,10 @@ final class ScanTest extends ApiTestCase
     public function test_switching_the_simulator_off_closes_its_list_and_refuses_its_scans(): void
     {
         $this->loginAs('driver');
-        putenv('SCANNER_SIMULATOR=false');
-        try {
-            $this->assertError(404, 'not_found', $this->api('GET', '/sim/items'));
-            $this->assertError(403, 'simulator_off', $this->api('POST', '/scan/lookup', $this->reads(1)));
-            $this->ok($this->api('POST', '/scan/lookup', ['source' => 'c72'] + $this->reads(1)));
-        } finally {
-            putenv('SCANNER_SIMULATOR=true');
-        }
+        config(['laundry.simulator' => false]);   // what SCANNER_SIMULATOR=false in .env does
+        $this->assertError(404, 'not_found', $this->api('GET', '/sim/items'));
+        $this->assertError(403, 'simulator_off', $this->api('POST', '/scan/lookup', $this->reads(1)));
+        $this->ok($this->api('POST', '/scan/lookup', ['source' => 'c72'] + $this->reads(1)));
     }
 
     public function test_register_stores_a_new_mat_and_writes_history(): void
@@ -1985,11 +1956,11 @@ final class ScanTest extends ApiTestCase
         $item = $this->ok($this->api('POST', '/items', $this->newMat(['epc' => '4d4f434b00000000000000ff'])))['item'];
         $this->assertSame(['MOCK-0255', 'registered', 0], [$item['sku'], $item['status'], $item['wash_count']]);
 
-        $row = q("SELECT * FROM items WHERE sku = 'MOCK-0255'")->fetch();
+        $row = row("SELECT * FROM items WHERE sku = 'MOCK-0255'");
         $this->assertSame(['4D4F434B00000000000000FF', '4D4F434B000A0000000000FF', '4D4F434B000B0000000000FF'],
             [$row['epc'], $row['tid_primary'], $row['tid_secondary']]);
 
-        $event = q('SELECT * FROM item_events WHERE item_id = ?', [$row['id']])->fetch();
+        $event = row('SELECT * FROM item_events WHERE item_id = ?', [$row['id']]);
         $this->assertSame(['register', null, 'registered', 'simulator', $this->users['inventory']],
             [$event['event_type'], $event['from_status'], $event['to_status'], $event['source'], $event['user_id']]);
     }
@@ -2002,7 +1973,7 @@ final class ScanTest extends ApiTestCase
         $this->assertError(422, 'invalid_reference', $this->api('POST', '/items', $this->newMat(['item_type_id' => 999])));
         $this->assertError(422, 'invalid_tag', $this->api('POST', '/items', $this->newMat(['epc' => 'XYZ'])));
         $this->assertError(422, 'invalid_input', $this->api('POST', '/items', $this->newMat(['sku' => ''])));
-        $this->assertSame(40, (int) q('SELECT COUNT(*) FROM items')->fetchColumn());
+        $this->assertSame(40, (int) DB::scalar('SELECT COUNT(*) FROM items'));
     }
 
     public function test_register_refuses_a_tag_or_sku_that_is_in_use(): void
@@ -2029,216 +2000,243 @@ final class ScanTest extends ApiTestCase
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/ScanTest.php`
+Run: `(cd site && php artisan test tests/Feature/ScanTest.php)`
 Expected: FAIL, the tests get `404 not_found`.
 
 - [ ] **Step 3: Write the shared scan code**
 
-Create `site/app/scan.php`:
+Create `site/app/Support/Scan.php`:
 
 ```php
 <?php
 /** What every scan shares: reading tag ids, finding the mats, the mat as a scanner sees it, and writing history. */
 declare(strict_types=1);
 
-const ITEM_STATUSES = ['registered', 'ready', 'qc_passed', 'rewash', 'repair', 'scrapped',
-    'out_for_delivery', 'refused', 'at_customer', 'collected', 'in_washing'];
+namespace App\Support;
 
-const ITEM_SELECT = 'SELECT i.*, t.name AS type_name FROM items i JOIN item_types t ON t.id = i.item_type_id';
+use Illuminate\Support\Facades\DB;
 
-// A pile read hears every tag many times, so one request may carry far more reads than mats.
-const MAX_READS = 5000;
-
-function simulator_on(): bool
+final class Scan
 {
-    return cfg('SCANNER_SIMULATOR') === 'true';
-}
+    public const STATUSES = ['registered', 'ready', 'qc_passed', 'rewash', 'repair', 'scrapped',
+        'out_for_delivery', 'refused', 'at_customer', 'collected', 'in_washing'];
 
-/** A tag id: 8 to 64 hex characters, returned in uppercase. */
-function hex_in(array $in, string $key): string
-{
-    $value = $in[$key] ?? null;
-    $hex = is_string($value) ? strtoupper(trim($value)) : '';
-    if (!preg_match('/^[0-9A-F]{8,64}$/', $hex)) {
-        fail(422, 'invalid_tag', "$key must be 8 to 64 hex characters.");
+    // The statuses in which a driver carries the mat. The database demands a holder exactly for these.
+    public const HELD = ['out_for_delivery', 'refused', 'collected'];
+
+    public const ITEM_SELECT = 'SELECT i.*, t.name AS type_name FROM items i JOIN item_types t ON t.id = i.item_type_id';
+
+    // A pile read hears every tag many times, so one request may carry far more reads than mats.
+    public const MAX_READS = 5000;
+
+    /** A tag id: 8 to 64 hex characters, returned in uppercase. $key names the field in the error message. */
+    public static function hex(mixed $value, string $key): string
+    {
+        $hex = is_string($value) ? strtoupper(trim($value)) : '';
+        if (!preg_match('/^[0-9A-F]{8,64}$/', $hex)) {
+            fail(422, 'invalid_tag', "$key must be 8 to 64 hex characters.");
+        }
+        return $hex;
     }
-    return $hex;
-}
 
-/** Where a scan came from. The simulator may only speak while it is switched on. */
-function source_in(array $in): string
-{
-    $source = enum_in($in, 'source', ['simulator', 'c72']);
-    if ($source === 'simulator' && !simulator_on()) {
-        fail(403, 'simulator_off', 'The scanner simulator is switched off.');
+    /** Where a scan came from. The simulator may only speak while it is switched on. */
+    public static function source(array $in): string
+    {
+        $source = $in['source'] ?? null;
+        if (!in_array($source, ['simulator', 'c72'], true)) {
+            fail(422, 'invalid_input', 'source must be one of: simulator, c72.');
+        }
+        if ($source === 'simulator' && !config('laundry.simulator')) {
+            fail(403, 'simulator_off', 'The scanner simulator is switched off.');
+        }
+        return $source;
     }
-    return $source;
-}
 
-/** The EPCs of a scan: uppercase, each one once, in the order they were first heard. */
-function reads_in(array $in): array
-{
-    $reads = $in['reads'] ?? null;
-    if (!is_array($reads) || !array_is_list($reads) || $reads === [] || count($reads) > MAX_READS) {
-        fail(422, 'invalid_input', 'reads must be a list of 1 to ' . MAX_READS . ' tag reads.');
+    /** The EPCs of a scan: uppercase, each one once, in the order they were first heard. */
+    public static function reads(array $in): array
+    {
+        $reads = $in['reads'] ?? null;
+        if (!is_array($reads) || !array_is_list($reads) || $reads === [] || count($reads) > self::MAX_READS) {
+            fail(422, 'invalid_input', 'reads must be a list of 1 to ' . self::MAX_READS . ' tag reads.');
+        }
+        $epcs = [];
+        foreach ($reads as $read) {
+            $epcs[] = self::hex(is_array($read) ? ($read['epc'] ?? null) : null, 'epc');
+        }
+        // Keep the EPCs as values. As array keys PHP would turn an all-digit EPC into a number.
+        return array_values(array_unique($epcs));
     }
-    $epcs = [];
-    foreach ($reads as $read) {
-        $epcs[] = hex_in(is_array($read) ? $read : [], 'epc');
+
+    /** The mats with these EPCs, keyed by EPC. Read each mat's EPC from $item['epc'], never from the key. */
+    public static function itemsByEpc(array $epcs, bool $lock = false): array
+    {
+        if ($epcs === []) {
+            return [];
+        }
+        $sql = self::ITEM_SELECT . ' WHERE i.epc IN (' . marks($epcs) . ')' . ($lock ? ' FOR UPDATE' : '');
+        return array_column(rows($sql, $epcs), null, 'epc');
     }
-    // Keep the EPCs as values. As array keys PHP would turn an all-digit EPC into a number.
-    return array_values(array_unique($epcs));
-}
 
-/** The mats with these EPCs, keyed by EPC. Read each mat's EPC from $item['epc'], never from the key. */
-function items_by_epc(array $epcs, bool $lock = false): array
-{
-    if ($epcs === []) {
-        return [];
+    public static function itemById(int $id, bool $lock = false): array
+    {
+        $item = row(self::ITEM_SELECT . ' WHERE i.id = ?' . ($lock ? ' FOR UPDATE' : ''), [$id]);
+        if ($item === null) {
+            fail(404, 'not_found', 'No such mat.');
+        }
+        return $item;
     }
-    $sql = ITEM_SELECT . ' WHERE i.epc IN (' . marks($epcs) . ')' . ($lock ? ' FOR UPDATE' : '');
-    return array_column(q($sql, $epcs)->fetchAll(), null, 'epc');
-}
 
-function item_by_id(int $id, bool $lock = false): array
-{
-    $item = q(ITEM_SELECT . ' WHERE i.id = ?' . ($lock ? ' FOR UPDATE' : ''), [$id])->fetch();
-    if (!$item) {
-        fail(404, 'not_found', 'No such mat.');
+    /** A mat as every scanning role may see it. It never says at which customer the mat lies. */
+    public static function view(array $item): array
+    {
+        return [
+            'id' => $item['id'],
+            'sku' => $item['sku'],
+            'type' => $item['type_name'],
+            'status' => $item['status'],
+            'wash_count' => $item['wash_count'],
+            'current_wash_date' => $item['current_wash_date'],
+            'previous_wash_date' => $item['previous_wash_date'],
+        ];
     }
-    return $item;
-}
 
-/** A mat as every scanning role may see it. It never says at which customer the mat lies. */
-function item_view(array $item): array
-{
-    return [
-        'id' => $item['id'],
-        'sku' => $item['sku'],
-        'type' => $item['type_name'],
-        'status' => $item['status'],
-        'wash_count' => $item['wash_count'],
-        'current_wash_date' => $item['current_wash_date'],
-        'previous_wash_date' => $item['previous_wash_date'],
-    ];
-}
-
-/**
- * Adds one row to the mat history. $item is the mat as it was before the change, so its status is the "from".
- * $extra may hold handover_id, task_id, zone_id and note.
- */
-function log_event(array $item, int $userId, string $type, string $to, string $source, array $extra = []): void
-{
-    q('INSERT INTO item_events (item_id, user_id, event_type, from_status, to_status, handover_id, task_id, zone_id, note, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [$item['id'], $userId, $type, $item['status'], $to, $extra['handover_id'] ?? null, $extra['task_id'] ?? null,
-            $extra['zone_id'] ?? null, $extra['note'] ?? null, $source]);
-}
-
-/** One line of a scan answer. */
-function scan_result(string $epc, string $result, ?array $item, ?string $reason = null): array
-{
-    $line = ['epc' => $epc, 'result' => $result, 'item' => $item === null ? null : item_view($item)];
-    if ($reason !== null) {
-        $line['reason'] = $reason;
+    /**
+     * Adds one row to the mat history. $item is the mat as it was before the change, so its status is the "from".
+     * $extra may hold handover_id, task_id, zone_id and note.
+     */
+    public static function log(array $item, int $userId, string $type, string $to, string $source, array $extra = []): void
+    {
+        DB::insert('INSERT INTO item_events (item_id, user_id, event_type, from_status, to_status, handover_id, task_id, zone_id, note, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [$item['id'], $userId, $type, $item['status'], $to, $extra['handover_id'] ?? null, $extra['task_id'] ?? null,
+                $extra['zone_id'] ?? null, $extra['note'] ?? null, $source]);
     }
-    return $line;
-}
 
-function scan_lookup(Request $req, array $user): array
-{
-    source_in($req->body);
-    $epcs = reads_in($req->body);
-    $items = items_by_epc($epcs);
-    $results = [];
-    foreach ($epcs as $epc) {
-        $results[] = isset($items[$epc]) ? scan_result($epc, 'found', $items[$epc]) : scan_result($epc, 'unknown', null);
+    /** One line of a scan answer. */
+    public static function result(string $epc, string $result, ?array $item, ?string $reason = null): array
+    {
+        $line = ['epc' => $epc, 'result' => $result, 'item' => $item === null ? null : self::view($item)];
+        if ($reason !== null) {
+            $line['reason'] = $reason;
+        }
+        return $line;
     }
-    return ['results' => $results, 'missing' => []];
 }
+```
 
-/** Simulator only: a real scanner hears any mat near it, so the pile panel must be able to pick any mat. */
-function sim_items(Request $req, array $user): array
+Create `site/app/Http/Controllers/ScanController.php`:
+
+```php
+<?php
+/** The lookup that changes nothing, and the list of mats the simulator can "hear". */
+declare(strict_types=1);
+
+namespace App\Http\Controllers;
+
+use App\Support\Scan;
+use Illuminate\Http\Request;
+
+final class ScanController extends Controller
 {
-    if (!simulator_on()) {
-        fail(404, 'not_found', 'No such path.');
+    public function lookup(Request $request): array
+    {
+        Scan::source($request->all());
+        $epcs = Scan::reads($request->all());
+        $items = Scan::itemsByEpc($epcs);
+        $results = [];
+        foreach ($epcs as $epc) {
+            $results[] = isset($items[$epc]) ? Scan::result($epc, 'found', $items[$epc]) : Scan::result($epc, 'unknown', null);
+        }
+        return ['results' => $results, 'missing' => []];
     }
-    return ['items' => q('SELECT sku, epc FROM items ORDER BY sku')->fetchAll()];
+
+    /** Simulator only: a real scanner hears any mat near it, so the pile panel must be able to pick any mat. */
+    public function simItems(): array
+    {
+        if (!config('laundry.simulator')) {
+            fail(404, 'not_found', 'No such path.');
+        }
+        return ['items' => rows('SELECT sku, epc FROM items ORDER BY sku')];
+    }
 }
 ```
 
 - [ ] **Step 4: Write mat registration**
 
-Create `site/app/items.php`:
+Create `site/app/Http/Controllers/ItemController.php`:
 
 ```php
 <?php
 /** Mats: registering, releasing, the quality check, office corrections, the mat list and the mat history. */
 declare(strict_types=1);
 
-function items_register(Request $req, array $user): array
+namespace App\Http\Controllers;
+
+use App\Support\Scan;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+final class ItemController extends Controller
 {
-    $in = $req->body;
-    $source = source_in($in);
-    $epc = hex_in($in, 'epc');
-    $tidPrimary = hex_in($in, 'tid_primary');
-    $tidSecondary = hex_in($in, 'tid_secondary');
-    $sku = str_in($in, 'sku', 64);
-    $typeId = int_in($in, 'item_type_id');
+    /** Registers a new mat with its EPC and its two tags. */
+    public function store(Request $request): array
+    {
+        $source = Scan::source($request->all());
+        $epc = Scan::hex($request->input('epc'), 'epc');
+        $tidPrimary = Scan::hex($request->input('tid_primary'), 'tid_primary');
+        $tidSecondary = Scan::hex($request->input('tid_secondary'), 'tid_secondary');
+        $in = $request->validate(['sku' => 'required|string|max:64', 'item_type_id' => 'required|integer|min:0']);
+        $sku = $in['sku'];
+        $typeId = (int) $in['item_type_id'];
+        $userId = $request->user()->id;
 
-    if ($tidPrimary === $tidSecondary) {
-        fail(422, 'same_tid', 'The two tags of a mat must have different TIDs.');
-    }
-    if (!q('SELECT 1 FROM item_types WHERE id = ? AND is_active = 1', [$typeId])->fetch()) {
-        fail(422, 'invalid_reference', 'Unknown mat type.');
-    }
-
-    return tx(function () use ($source, $epc, $tidPrimary, $tidSecondary, $sku, $typeId, $user): array {
-        // Also catches a TID that is primary on one mat and secondary on another, which the unique keys cannot.
-        $clash = q('SELECT sku FROM items WHERE epc = ? OR sku = ? OR tid_primary IN (?, ?) OR tid_secondary IN (?, ?) LIMIT 1',
-            [$epc, $sku, $tidPrimary, $tidSecondary, $tidPrimary, $tidSecondary])->fetch();
-        if ($clash) {
-            fail(409, 'duplicate', "The EPC, the SKU or a TID is already in use on {$clash['sku']}.");
+        if ($tidPrimary === $tidSecondary) {
+            fail(422, 'same_tid', 'The two tags of a mat must have different TIDs.');
         }
-        q('INSERT INTO items (item_type_id, sku, epc, tid_primary, tid_secondary) VALUES (?, ?, ?, ?, ?)',
-            [$typeId, $sku, $epc, $tidPrimary, $tidSecondary]);
-        $item = item_by_id((int) db()->lastInsertId());
-        log_event(['status' => null] + $item, $user['id'], 'register', 'registered', $source);
-        return ['item' => item_view($item)];
-    });
+        if (DB::scalar('SELECT 1 FROM item_types WHERE id = ? AND is_active = 1', [$typeId]) === null) {
+            fail(422, 'invalid_reference', 'Unknown mat type.');
+        }
+
+        return DB::transaction(function () use ($source, $epc, $tidPrimary, $tidSecondary, $sku, $typeId, $userId): array {
+            // Also catches a TID that is primary on one mat and secondary on another, which the unique keys cannot.
+            $clash = row('SELECT sku FROM items WHERE epc = ? OR sku = ? OR tid_primary IN (?, ?) OR tid_secondary IN (?, ?) LIMIT 1',
+                [$epc, $sku, $tidPrimary, $tidSecondary, $tidPrimary, $tidSecondary]);
+            if ($clash !== null) {
+                fail(409, 'duplicate', "The EPC, the SKU or a TID is already in use on {$clash['sku']}.");
+            }
+            DB::insert('INSERT INTO items (item_type_id, sku, epc, tid_primary, tid_secondary) VALUES (?, ?, ?, ?, ?)',
+                [$typeId, $sku, $epc, $tidPrimary, $tidSecondary]);
+            $item = Scan::itemById((int) DB::getPdo()->lastInsertId());
+            Scan::log(['status' => null] + $item, $userId, 'register', 'registered', $source);
+            return ['item' => Scan::view($item)];
+        });
+    }
 }
 ```
 
-In `site/app/bootstrap.php` replace the file list:
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-foreach (['db', 'http', 'kernel', 'auth', 'refdata', 'users', 'scan', 'items'] as $file) {
-    require __DIR__ . "/$file.php";
-}
-```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
-
-```php
-    ['POST', '/scan/lookup', $scanners, 'scan_lookup'],
-    ['GET',  '/sim/items',   $scanners, 'sim_items'],
-    ['POST', '/items',       [$I],      'items_register'],
+    Route::post('/scan/lookup', [C\ScanController::class, 'lookup'])->middleware($scanners);
+    Route::get('/sim/items', [C\ScanController::class, 'simItems'])->middleware($scanners);
+    Route::post('/items', [C\ItemController::class, 'store'])->middleware('role:inventory');
 ```
 
 - [ ] **Step 5: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/ScanTest.php`
-Expected: `OK (10 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/ScanTest.php)`
+Expected: `Tests:    10 passed`.
 
 - [ ] **Step 6: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (48 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    47 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.4-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.4"/' composer.json
-git add site/app/scan.php site/app/items.php site/app/bootstrap.php site/app/routes.php tests/ScanTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.4"/' site/composer.json
+git add site README.md
 git commit -m "Add tag reads, lookup, simulator list and mat registration at 0.4.4."
 ```
 
@@ -2247,29 +2245,33 @@ git commit -m "Add tag reads, lookup, simulator list and mat registration at 0.4
 ### Task 6: Ready, quality check, correction, mat list and mat history
 
 **Files:**
-- Modify: `site/app/items.php` (add functions at the end), `site/app/routes.php`
-- Test: `tests/ItemsTest.php`
+- Modify: `site/app/Http/Controllers/ItemController.php` (add members at the end of the class), `site/routes/api.php`
+- Test: `site/tests/Feature/ItemsTest.php`
 
 **Interfaces:**
-- Consumes: `source_in()`, `reads_in()`, `hex_in()`, `items_by_epc()`, `item_by_id()`, `item_view()`, `log_event()`, `scan_result()`, `ITEM_STATUSES`, `q()`, `tx()`, `str_in()`, `int_in()`, `enum_in()`.
+- Consumes: `Scan::source()`, `Scan::reads()`, `Scan::hex()`, `Scan::itemsByEpc()`, `Scan::itemById()`, `Scan::view()`, `Scan::log()`, `Scan::result()`, `Scan::STATUSES`, `Scan::HELD`, `rows()`, `row()`, `DB::transaction()`, `$request->validate()`.
 - Produces:
-  - `const HELD_STATUSES = ['out_for_delivery', 'refused', 'collected']` — the statuses in which a driver carries the mat
-  - `item_office_view(array $item): array` — `item_view` plus `epc, tid_primary, tid_secondary, item_type_id, holder, location`
   - Routes:
     - `POST /items/ready` (inventory) — `{source, reads}` → scan answer
     - `POST /items/qc` (inventory) — `{source, epc, result: pass|rewash|repair|scrap, note?}` → scan answer with one line
     - `POST /items/{id}/correct` (office) — `{status, holder_user_id, zone_id, note}` → `{"item": {...}}`
     - `GET /items` (office, inventory, driver, washing) — `?status=&type=&q=&page=` → `{"items": [...], "page", "per_page", "total"}`
     - `GET /items/{id}` (office, washing) → `{"item": {...}, "events": [...]}`
+  - For the office a mat is `Scan::view()` plus `epc, tid_primary, tid_secondary, item_type_id, holder, location`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/ItemsTest.php`:
+Create `site/tests/Feature/ItemsTest.php`:
 
 ```php
 <?php
 /** Releasing mats, the quality check, office corrections, the mat list per role and the mat history. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class ItemsTest extends ApiTestCase
 {
@@ -2415,8 +2417,8 @@ final class ItemsTest extends ApiTestCase
 
     public function test_a_search_for_percent_or_underscore_matches_them_literally(): void
     {
-        q("UPDATE items SET sku = '50%OFF' WHERE sku = 'MOCK-0001'");
-        q("UPDATE items SET sku = 'A_B' WHERE sku = 'MOCK-0002'");
+        DB::statement("UPDATE items SET sku = '50%OFF' WHERE sku = 'MOCK-0001'");
+        DB::statement("UPDATE items SET sku = 'A_B' WHERE sku = 'MOCK-0002'");
         $this->loginAs('office');
         $this->assertSame(['50%OFF'], array_column($this->ok($this->api('GET', '/items?q=%25'))['items'], 'sku'));
         $this->assertSame(['A_B'], array_column($this->ok($this->api('GET', '/items?q=_'))['items'], 'sku'));
@@ -2469,208 +2471,226 @@ final class ItemsTest extends ApiTestCase
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/ItemsTest.php`
+Run: `(cd site && php artisan test tests/Feature/ItemsTest.php)`
 Expected: FAIL: `POST /items/ready` and `POST /items/qc` get `404 not_found`, `GET /items` gets `405 method_not_allowed`.
 
 - [ ] **Step 3: Write the implementation**
 
-Add at the end of `site/app/items.php`:
+Add these members at the end of the class in `site/app/Http/Controllers/ItemController.php`:
 
 ```php
-// The statuses in which a driver carries the mat. The database demands a holder exactly for these.
-const HELD_STATUSES = ['out_for_delivery', 'refused', 'collected'];
+    private const QC_RESULTS = ['pass' => 'qc_passed', 'rewash' => 'rewash', 'repair' => 'repair', 'scrap' => 'scrapped'];
 
-const QC_RESULTS = ['pass' => 'qc_passed', 'rewash' => 'rewash', 'repair' => 'repair', 'scrap' => 'scrapped'];
+    private const PER_PAGE = 50;
 
-const ITEMS_PER_PAGE = 50;
+    private const OFFICE_SELECT = 'SELECT i.*, t.name AS type_name, u.name AS holder_name, z.name AS zone_name,
+            b.name AS building_name, c.name AS customer_name
+        FROM items i
+        JOIN item_types t ON t.id = i.item_type_id
+        LEFT JOIN users u ON u.id = i.holder_user_id
+        LEFT JOIN zones z ON z.id = i.zone_id
+        LEFT JOIN buildings b ON b.id = z.building_id
+        LEFT JOIN customers c ON c.id = b.customer_id';
 
-const ITEM_OFFICE_SELECT = 'SELECT i.*, t.name AS type_name, u.name AS holder_name, z.name AS zone_name,
-        b.name AS building_name, c.name AS customer_name
-    FROM items i
-    JOIN item_types t ON t.id = i.item_type_id
-    LEFT JOIN users u ON u.id = i.holder_user_id
-    LEFT JOIN zones z ON z.id = i.zone_id
-    LEFT JOIN buildings b ON b.id = z.building_id
-    LEFT JOIN customers c ON c.id = b.customer_id';
+    /** A mat as the office sees it: with its tags, who carries it and where it lies. */
+    private static function officeView(array $item): array
+    {
+        return Scan::view($item) + [
+            'epc' => $item['epc'],
+            'tid_primary' => $item['tid_primary'],
+            'tid_secondary' => $item['tid_secondary'],
+            'item_type_id' => $item['item_type_id'],
+            'holder' => $item['holder_user_id'] === null ? null
+                : ['id' => $item['holder_user_id'], 'name' => $item['holder_name']],
+            'location' => $item['zone_id'] === null ? null
+                : ['zone_id' => $item['zone_id'], 'zone' => $item['zone_name'],
+                    'building' => $item['building_name'], 'customer' => $item['customer_name']],
+        ];
+    }
 
-/** A mat as the office sees it: with its tags, who carries it and where it lies. */
-function item_office_view(array $item): array
-{
-    return item_view($item) + [
-        'epc' => $item['epc'],
-        'tid_primary' => $item['tid_primary'],
-        'tid_secondary' => $item['tid_secondary'],
-        'item_type_id' => $item['item_type_id'],
-        'holder' => $item['holder_user_id'] === null ? null
-            : ['id' => $item['holder_user_id'], 'name' => $item['holder_name']],
-        'location' => $item['zone_id'] === null ? null
-            : ['zone_id' => $item['zone_id'], 'zone' => $item['zone_name'],
-                'building' => $item['building_name'], 'customer' => $item['customer_name']],
-    ];
-}
-
-function items_ready(Request $req, array $user): array
-{
-    $source = source_in($req->body);
-    $epcs = reads_in($req->body);
-    return tx(function () use ($source, $epcs, $user): array {
-        $items = items_by_epc($epcs, true);
-        $results = [];
-        foreach ($epcs as $epc) {
-            $item = $items[$epc] ?? null;
-            if ($item === null) {
-                $results[] = scan_result($epc, 'unknown', null);
-            } elseif ($item['status'] === 'ready') {
-                $results[] = scan_result($epc, 'found', $item);   // a second scan: nothing to change
-            } elseif (!in_array($item['status'], ['registered', 'repair'], true)) {
-                $results[] = scan_result($epc, 'rejected', $item, "{$item['sku']} is {$item['status']}, not registered or repair.");
-            } else {
-                q("UPDATE items SET status = 'ready' WHERE id = ? AND status IN ('registered', 'repair')", [$item['id']]);
-                log_event($item, $user['id'], 'ready', 'ready', $source);
-                $results[] = scan_result($epc, 'found', ['status' => 'ready'] + $item);
+    /** Releases registered and repaired mats for use. */
+    public function ready(Request $request): array
+    {
+        $source = Scan::source($request->all());
+        $epcs = Scan::reads($request->all());
+        $userId = $request->user()->id;
+        return DB::transaction(function () use ($source, $epcs, $userId): array {
+            $items = Scan::itemsByEpc($epcs, true);
+            $results = [];
+            foreach ($epcs as $epc) {
+                $item = $items[$epc] ?? null;
+                if ($item === null) {
+                    $results[] = Scan::result($epc, 'unknown', null);
+                } elseif ($item['status'] === 'ready') {
+                    $results[] = Scan::result($epc, 'found', $item);   // a second scan: nothing to change
+                } elseif (!in_array($item['status'], ['registered', 'repair'], true)) {
+                    $results[] = Scan::result($epc, 'rejected', $item, "{$item['sku']} is {$item['status']}, not registered or repair.");
+                } else {
+                    DB::update("UPDATE items SET status = 'ready' WHERE id = ? AND status IN ('registered', 'repair')", [$item['id']]);
+                    Scan::log($item, $userId, 'ready', 'ready', $source);
+                    $results[] = Scan::result($epc, 'found', ['status' => 'ready'] + $item);
+                }
             }
-        }
-        return ['results' => $results, 'missing' => []];
-    });
-}
+            return ['results' => $results, 'missing' => []];
+        });
+    }
 
-function items_qc(Request $req, array $user): array
-{
-    $in = $req->body;
-    $source = source_in($in);
-    $epc = hex_in($in, 'epc');
-    $to = QC_RESULTS[enum_in($in, 'result', array_keys(QC_RESULTS))];
-    $note = str_in($in, 'note', 500, false);
-    return tx(function () use ($source, $epc, $to, $note, $user): array {
-        $item = items_by_epc([$epc], true)[$epc] ?? null;
+    /** The quality check of one mat: pass, rewash, repair or scrap. */
+    public function qc(Request $request): array
+    {
+        $source = Scan::source($request->all());
+        $epc = Scan::hex($request->input('epc'), 'epc');
+        $in = $request->validate([
+            'result' => 'required|in:' . implode(',', array_keys(self::QC_RESULTS)),
+            'note' => 'nullable|string|max:500',
+        ]);
+        $to = self::QC_RESULTS[$in['result']];
+        $note = $in['note'] ?? null;
+        $userId = $request->user()->id;
+        return DB::transaction(function () use ($source, $epc, $to, $note, $userId): array {
+            $item = Scan::itemsByEpc([$epc], true)[$epc] ?? null;
+            if ($item === null) {
+                $result = Scan::result($epc, 'unknown', null);
+            } elseif ($item['status'] === $to) {
+                $result = Scan::result($epc, 'found', $item);   // a second scan: nothing to change
+            } elseif ($item['status'] !== 'ready') {
+                $result = Scan::result($epc, 'rejected', $item, "{$item['sku']} is {$item['status']}, not ready.");
+            } else {
+                DB::update("UPDATE items SET status = ? WHERE id = ? AND status = 'ready'", [$to, $item['id']]);
+                Scan::log($item, $userId, 'qc', $to, $source, ['note' => $note]);
+                $result = Scan::result($epc, 'found', ['status' => $to] + $item);
+            }
+            return ['results' => [$result], 'missing' => []];
+        });
+    }
+
+    /** The office may put a mat into any status, but only with a note, and never into a state the database refuses. */
+    public function correct(Request $request, int $id): array
+    {
+        $in = $request->validate([
+            'status' => 'required|in:' . implode(',', Scan::STATUSES),
+            'holder_user_id' => 'nullable|integer|min:0',
+            'zone_id' => 'nullable|integer|min:0',
+            'note' => 'required|string|max:500',
+        ]);
+        $status = $in['status'];
+        $holder = isset($in['holder_user_id']) ? (int) $in['holder_user_id'] : null;
+        $zone = isset($in['zone_id']) ? (int) $in['zone_id'] : null;
+        $note = $in['note'];
+        $userId = $request->user()->id;
+
+        if (($status === 'at_customer') !== ($zone !== null)) {
+            fail(422, 'rule_violation', 'A mat has a zone exactly when it is at a customer.');
+        }
+        if (in_array($status, Scan::HELD, true) !== ($holder !== null)) {
+            fail(422, 'rule_violation', 'A mat has a holder exactly when a driver carries it.');
+        }
+        if ($holder !== null && DB::scalar("SELECT 1 FROM users WHERE id = ? AND role = 'driver' AND is_active = 1", [$holder]) === null) {
+            fail(422, 'invalid_reference', 'The holder must be an active driver.');
+        }
+
+        return DB::transaction(function () use ($id, $status, $holder, $zone, $note, $userId): array {
+            $item = Scan::itemById($id, true);
+            DB::update('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE id = ?', [$status, $holder, $zone, $id]);
+            Scan::log($item, $userId, 'correction', $status, 'web', ['note' => $note, 'zone_id' => $zone]);
+            return ['item' => Scan::view(['status' => $status] + $item)];
+        });
+    }
+
+    /** The mat list. Each scanning role sees only the mats that are with it; the office sees all, with more detail. */
+    public function index(Request $request): array
+    {
+        $filter = $request->validate([
+            'status' => 'nullable|in:' . implode(',', Scan::STATUSES),
+            'type' => 'nullable|integer|min:0',
+            'q' => 'nullable|string|max:64',
+            'page' => 'nullable|integer|min:0',
+        ]);
+        $user = $request->user();
+
+        $where = ['1 = 1'];
+        $params = [];
+        if ($user->role === 'inventory') {
+            $where[] = "i.status IN ('registered', 'ready', 'qc_passed', 'rewash', 'repair')";
+        } elseif ($user->role === 'driver') {
+            $where[] = 'i.holder_user_id = ?';
+            $params[] = $user->id;
+        } elseif ($user->role === 'washing') {
+            $where[] = "i.status = 'in_washing'";
+        }
+        if (isset($filter['status'])) {
+            $where[] = 'i.status = ?';
+            $params[] = $filter['status'];
+        }
+        if (isset($filter['type'])) {
+            $where[] = 'i.item_type_id = ?';
+            $params[] = (int) $filter['type'];
+        }
+        if (isset($filter['q'])) {
+            // Escape the LIKE wildcards, so a search for "%" finds a literal "%" and not every mat.
+            $like = '%' . addcslashes($filter['q'], '%_\\') . '%';
+            $where[] = '(i.sku LIKE ? OR i.epc LIKE ?)';
+            array_push($params, $like, $like);
+        }
+        $page = max(1, (int) ($filter['page'] ?? 1));
+
+        $sqlWhere = ' WHERE ' . implode(' AND ', $where);
+        $total = (int) DB::scalar('SELECT COUNT(*) FROM items i' . $sqlWhere, $params);
+        $items = rows(self::OFFICE_SELECT . $sqlWhere . ' ORDER BY i.sku LIMIT ? OFFSET ?',
+            [...$params, self::PER_PAGE, ($page - 1) * self::PER_PAGE]);
+
+        $view = $user->role === 'office' ? self::officeView(...) : Scan::view(...);
+        return ['items' => array_map($view, $items), 'page' => $page, 'per_page' => self::PER_PAGE, 'total' => $total];
+    }
+
+    /** One mat with its history. */
+    public function show(Request $request, int $id): array
+    {
+        $item = row(self::OFFICE_SELECT . ' WHERE i.id = ?', [$id]);
         if ($item === null) {
-            $result = scan_result($epc, 'unknown', null);
-        } elseif ($item['status'] === $to) {
-            $result = scan_result($epc, 'found', $item);   // a second scan: nothing to change
-        } elseif ($item['status'] !== 'ready') {
-            $result = scan_result($epc, 'rejected', $item, "{$item['sku']} is {$item['status']}, not ready.");
-        } else {
-            q("UPDATE items SET status = ? WHERE id = ? AND status = 'ready'", [$to, $item['id']]);
-            log_event($item, $user['id'], 'qc', $to, $source, ['note' => $note]);
-            $result = scan_result($epc, 'found', ['status' => $to] + $item);
+            fail(404, 'not_found', 'No such mat.');
         }
-        return ['results' => [$result], 'missing' => []];
-    });
-}
-
-/** The office may put a mat into any status, but only with a note, and never into a state the database refuses. */
-function items_correct(Request $req, array $user, int $id): array
-{
-    $in = $req->body;
-    $status = enum_in($in, 'status', ITEM_STATUSES);
-    $holder = int_in($in, 'holder_user_id', false);
-    $zone = int_in($in, 'zone_id', false);
-    $note = str_in($in, 'note', 500);
-
-    if (($status === 'at_customer') !== ($zone !== null)) {
-        fail(422, 'rule_violation', 'A mat has a zone exactly when it is at a customer.');
-    }
-    if (in_array($status, HELD_STATUSES, true) !== ($holder !== null)) {
-        fail(422, 'rule_violation', 'A mat has a holder exactly when a driver carries it.');
-    }
-    if ($holder !== null && !q("SELECT 1 FROM users WHERE id = ? AND role = 'driver' AND is_active = 1", [$holder])->fetch()) {
-        fail(422, 'invalid_reference', 'The holder must be an active driver.');
-    }
-
-    return tx(function () use ($id, $status, $holder, $zone, $note, $user): array {
-        $item = item_by_id($id, true);
-        q('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE id = ?', [$status, $holder, $zone, $id]);
-        log_event($item, $user['id'], 'correction', $status, 'web', ['note' => $note, 'zone_id' => $zone]);
-        return ['item' => item_view(['status' => $status] + $item)];
-    });
-}
-
-function items_list(Request $req, array $user): array
-{
-    $where = ['1 = 1'];
-    $params = [];
-    // Each scanning role sees only the mats that are with it.
-    if ($user['role'] === 'inventory') {
-        $where[] = "i.status IN ('registered', 'ready', 'qc_passed', 'rewash', 'repair')";
-    } elseif ($user['role'] === 'driver') {
-        $where[] = 'i.holder_user_id = ?';
-        $params[] = $user['id'];
-    } elseif ($user['role'] === 'washing') {
-        $where[] = "i.status = 'in_washing'";
-    }
-
-    $filter = $req->query;
-    if (($filter['status'] ?? '') !== '') {
-        $where[] = 'i.status = ?';
-        $params[] = enum_in($filter, 'status', ITEM_STATUSES);
-    }
-    if (($filter['type'] ?? '') !== '') {
-        $where[] = 'i.item_type_id = ?';
-        $params[] = int_in($filter, 'type');
-    }
-    if (($filter['q'] ?? '') !== '') {
-        // Escape the LIKE wildcards, so a search for "%" finds a literal "%" and not every mat.
-        $like = '%' . addcslashes(str_in($filter, 'q', 64), '%_\\') . '%';
-        $where[] = '(i.sku LIKE ? OR i.epc LIKE ?)';
-        array_push($params, $like, $like);
-    }
-    $page = max(1, int_in($filter, 'page', false) ?? 1);
-
-    $sqlWhere = ' WHERE ' . implode(' AND ', $where);
-    $total = (int) q('SELECT COUNT(*) FROM items i' . $sqlWhere, $params)->fetchColumn();
-    $rows = q(ITEM_OFFICE_SELECT . $sqlWhere . ' ORDER BY i.sku LIMIT ? OFFSET ?',
-        [...$params, ITEMS_PER_PAGE, ($page - 1) * ITEMS_PER_PAGE])->fetchAll();
-
-    $view = $user['role'] === 'office' ? 'item_office_view' : 'item_view';
-    return ['items' => array_map($view, $rows), 'page' => $page, 'per_page' => ITEMS_PER_PAGE, 'total' => $total];
-}
-
-function items_get(Request $req, array $user, int $id): array
-{
-    $item = q(ITEM_OFFICE_SELECT . ' WHERE i.id = ?', [$id])->fetch();
-    if (!$item) {
-        fail(404, 'not_found', 'No such mat.');
-    }
-    $events = q('SELECT e.id, e.created_at, e.event_type, e.from_status, e.to_status, e.source, e.note,
+        $events = rows('SELECT e.id, e.created_at, e.event_type, e.from_status, e.to_status, e.source, e.note,
                 e.handover_id, e.task_id, u.name AS user_name, z.name AS zone_name
             FROM item_events e
             JOIN users u ON u.id = e.user_id
             LEFT JOIN zones z ON z.id = e.zone_id
-            WHERE e.item_id = ? ORDER BY e.id', [$id])->fetchAll();
+            WHERE e.item_id = ? ORDER BY e.id', [$id]);
 
-    if ($user['role'] === 'office') {
-        return ['item' => item_office_view($item), 'events' => $events];
+        if ($request->user()->role === 'office') {
+            return ['item' => self::officeView($item), 'events' => $events];
+        }
+        // Washing sees what happened and who did it, but nothing that names the customer.
+        $hidden = array_flip(['note', 'task_id', 'zone_name']);
+        return ['item' => Scan::view($item), 'events' => array_map(fn (array $e) => array_diff_key($e, $hidden), $events)];
     }
-    // Washing sees what happened and who did it, but nothing that names the customer.
-    $hidden = array_flip(['note', 'task_id', 'zone_name']);
-    return ['item' => item_view($item), 'events' => array_map(fn (array $e) => array_diff_key($e, $hidden), $events)];
-}
 ```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-    ['GET',  '/items',              [$O, $I, $D, $W], 'items_list'],
-    ['POST', '/items/ready',        [$I],             'items_ready'],
-    ['POST', '/items/qc',           [$I],             'items_qc'],
-    ['GET',  '/items/{id}',         [$O, $W],         'items_get'],
-    ['POST', '/items/{id}/correct', [$O],             'items_correct'],
+
+    Route::get('/items', [C\ItemController::class, 'index'])->middleware('role:office,inventory,driver,washing');
+    Route::post('/items/ready', [C\ItemController::class, 'ready'])->middleware('role:inventory');
+    Route::post('/items/qc', [C\ItemController::class, 'qc'])->middleware('role:inventory');
+    Route::get('/items/{id}', [C\ItemController::class, 'show'])->middleware('role:office,washing');
+    Route::post('/items/{id}/correct', [C\ItemController::class, 'correct'])->middleware('role:office');
 ```
 
 - [ ] **Step 4: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/ItemsTest.php`
-Expected: `OK (12 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/ItemsTest.php)`
+Expected: `Tests:    12 passed`.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (60 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    59 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.5-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.5"/' composer.json
-git add site/app/items.php site/app/routes.php tests/ItemsTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.5"/' site/composer.json
+git add site README.md
 git commit -m "Add ready, quality check, correction, mat list and mat history at 0.4.5."
 ```
 
@@ -2679,15 +2699,15 @@ git commit -m "Add ready, quality check, correction, mat list and mat history at
 ### Task 7: Handovers: open and scan
 
 **Files:**
-- Create: `site/app/handovers.php`
-- Modify: `site/app/bootstrap.php` (file list), `site/app/routes.php`, `tests/ApiTestCase.php` (two helpers)
-- Test: `tests/HandoverScanTest.php`
+- Create: `site/app/Http/Controllers/HandoverController.php`
+- Modify: `site/routes/api.php`, `site/tests/ApiTestCase.php` (two helpers)
+- Test: `site/tests/Feature/HandoverScanTest.php`
 
 **Interfaces:**
-- Consumes: `source_in()`, `reads_in()`, `items_by_epc()`, `item_view()`, `log_event()`, `scan_result()`, `ITEM_SELECT`, `q()`, `tx()`, `marks()`, `today()`, `enum_in()`, `int_in()`.
+- Consumes: `Scan::source()`, `Scan::reads()`, `Scan::itemsByEpc()`, `Scan::view()`, `Scan::log()`, `Scan::result()`, `Scan::ITEM_SELECT`, `rows()`, `row()`, `marks()`, `today()`, `DB::transaction()`, `$request->validate()`.
 - Produces:
-  - `const HANDOVERS` — per type: `giver` (list of roles), `receiver` (role), `from`, `to`, `two_sided`, `wash`
-  - `handover_view(int $id): array` — `id, type, status, created_at, closed_at, giver {id, name}, receiver {id, name}, items [item_view + given_at, received_at, resolved_at]`; 404 when unknown
+  - `HandoverController::TYPES` — per type: `giver` (list of roles), `receiver` (role), `from`, `to`, `two_sided`, `wash`
+  - A handover in an answer is `id, type, status, created_at, closed_at, giver {id, name}, receiver {id, name}, items [mat as Scan::view() + given_at, received_at, resolved_at]`
   - Routes: `POST /handovers` (inventory, driver, washing, outbound) — `{type, receiver_id}` → `{"handover": {...}}`; `POST /handovers/{id}/scan` (same four) — `{source, reads}` → scan answer
   - Test helpers in `ApiTestCase`: `openHandover(string $giver, string $type, string $receiver): int` and `scanHandover(string $who, int $handover, int ...$mats): array` (both log in as the named user)
 
@@ -2703,7 +2723,7 @@ The five types. A wash is counted at Handover C, when the washing house manager 
 
 - [ ] **Step 1: Add the test helpers**
 
-Add these two methods at the end of the class in `tests/ApiTestCase.php`:
+Add these two methods at the end of the class in `site/tests/ApiTestCase.php`:
 
 ```php
     /** Logs in as the giver and opens a handover. Returns its id. */
@@ -2724,12 +2744,17 @@ Add these two methods at the end of the class in `tests/ApiTestCase.php`:
 
 - [ ] **Step 2: Write the failing test**
 
-Create `tests/HandoverScanTest.php`:
+Create `site/tests/Feature/HandoverScanTest.php`:
 
 ```php
 <?php
 /** Opening a handover and the two scans: a mat moves only when both sides scanned it, and only once. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class HandoverScanTest extends ApiTestCase
 {
@@ -2744,7 +2769,7 @@ final class HandoverScanTest extends ApiTestCase
         // Sent twice on a bad connection: the open handover comes back, no second one is made.
         $this->assertSame($handover['id'], $this->openHandover('inventory', 'inventory_to_driver', 'driver'));
         $this->assertNotSame($handover['id'], $this->openHandover('outbound', 'inventory_to_driver', 'driver'));
-        $this->assertSame(2, (int) q('SELECT COUNT(*) FROM handovers')->fetchColumn());
+        $this->assertSame(2, (int) DB::scalar('SELECT COUNT(*) FROM handovers'));
     }
 
     public function test_a_handover_needs_the_right_giver_and_receiver(): void
@@ -2758,7 +2783,7 @@ final class HandoverScanTest extends ApiTestCase
             ['type' => 'inventory_to_driver', 'receiver_id' => $this->users['washing']]));
         $this->assertError(422, 'invalid_input', $this->api('POST', '/handovers',
             ['type' => 'nonsense', 'receiver_id' => $this->users['driver']]));
-        q('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver2']]);
+        DB::statement('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver2']]);
         $this->assertError(422, 'invalid_reference', $this->api('POST', '/handovers',
             ['type' => 'inventory_to_driver', 'receiver_id' => $this->users['driver2']]));
     }
@@ -2794,7 +2819,7 @@ final class HandoverScanTest extends ApiTestCase
             ['source' => 'simulator', 'reads' => [['epc' => $this->epc(1)], ['epc' => 'AAAA0000']]]));
         $this->assertSame(['rejected', 'unknown'], array_column($out['results'], 'result'));
         $this->assertSame('MOCK-0001 is ready, not qc_passed.', $out['results'][0]['reason']);
-        $this->assertSame(0, (int) q('SELECT COUNT(*) FROM handover_items')->fetchColumn());
+        $this->assertSame(0, (int) DB::scalar('SELECT COUNT(*) FROM handover_items'));
     }
 
     public function test_a_mat_only_the_receiver_scanned_is_not_on_the_list_and_stays_put(): void
@@ -2807,8 +2832,8 @@ final class HandoverScanTest extends ApiTestCase
         $this->assertSame(['found', 'not_on_list'], array_column($out['results'], 'result'));
         $this->assertSame(['ready', null], [$this->item(2)['status'], $this->item(2)['holder_user_id']]);
 
-        $row = q('SELECT given_at, received_at FROM handover_items WHERE handover_id = ? AND item_id = ?',
-            [$handover, $this->item(2)['id']])->fetch();
+        $row = row('SELECT given_at, received_at FROM handover_items WHERE handover_id = ? AND item_id = ?',
+            [$handover, $this->item(2)['id']]);
         $this->assertNull($row['given_at']);
         $this->assertNotNull($row['received_at']);
     }
@@ -2828,7 +2853,7 @@ final class HandoverScanTest extends ApiTestCase
     public function test_handover_b_puts_the_mat_in_washing_without_counting_a_wash(): void
     {
         $this->setItems([1], 'collected', $this->users['driver']);
-        q("UPDATE items SET current_wash_date = '2026-09-01', previous_wash_date = '2026-08-01', wash_count = 3 WHERE sku = 'MOCK-0001'");
+        DB::statement("UPDATE items SET current_wash_date = '2026-09-01', previous_wash_date = '2026-08-01', wash_count = 3 WHERE sku = 'MOCK-0001'");
         $handover = $this->openHandover('driver', 'driver_to_washing', 'washing');
 
         $this->scanHandover('driver', $handover, 1);
@@ -2845,7 +2870,7 @@ final class HandoverScanTest extends ApiTestCase
     public function test_the_scan_after_washing_makes_the_mat_ready_and_counts_one_wash(): void
     {
         $this->setItems([1, 2], 'in_washing');
-        q("UPDATE items SET current_wash_date = '2026-09-01', previous_wash_date = '2026-08-01', wash_count = 3 WHERE sku = 'MOCK-0001'");
+        DB::statement("UPDATE items SET current_wash_date = '2026-09-01', previous_wash_date = '2026-08-01', wash_count = 3 WHERE sku = 'MOCK-0001'");
         $handover = $this->openHandover('washing', 'washing_to_inventory', 'inventory');
 
         $give = $this->scanHandover('washing', $handover, 1, 2);
@@ -2945,231 +2970,244 @@ final class HandoverScanTest extends ApiTestCase
 
 - [ ] **Step 3: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/HandoverScanTest.php`
+Run: `(cd site && php artisan test tests/Feature/HandoverScanTest.php)`
 Expected: FAIL, the tests get `404 not_found`.
 
 - [ ] **Step 4: Write the implementation**
 
-Create `site/app/handovers.php`:
+Create `site/app/Http/Controllers/HandoverController.php`:
 
 ```php
 <?php
 /** Handovers: one person passes a pile to another. A mat moves when both have scanned it (Handover C: when the giver has). */
 declare(strict_types=1);
 
-// Per type: who may give, which role receives, the status a mat must have, the status it gets,
-// whether the receiver's scan is needed, and whether the move counts as a wash.
-// A wash is counted once: when the washing house manager scans the washed mat out (Handover C).
-const HANDOVERS = [
-    'inventory_to_driver' => ['giver' => ['inventory', 'outbound'], 'receiver' => 'driver',
-        'from' => 'qc_passed', 'to' => 'out_for_delivery', 'two_sided' => true, 'wash' => false],
-    'driver_to_washing' => ['giver' => ['driver'], 'receiver' => 'washing',
-        'from' => 'collected', 'to' => 'in_washing', 'two_sided' => true, 'wash' => false],
-    'washing_to_inventory' => ['giver' => ['washing'], 'receiver' => 'inventory',
-        'from' => 'in_washing', 'to' => 'ready', 'two_sided' => false, 'wash' => true],
-    'driver_to_inventory' => ['giver' => ['driver'], 'receiver' => 'inventory',
-        'from' => 'refused', 'to' => 'ready', 'two_sided' => true, 'wash' => false],
-    'inventory_to_washing' => ['giver' => ['inventory'], 'receiver' => 'washing',
-        'from' => 'rewash', 'to' => 'in_washing', 'two_sided' => true, 'wash' => false],
-];
+namespace App\Http\Controllers;
 
-function handover_view(int $id): array
+use App\Models\User;
+use App\Support\Scan;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+final class HandoverController extends Controller
 {
-    $handover = q('SELECT h.*, g.name AS giver_name, r.name AS receiver_name
-        FROM handovers h JOIN users g ON g.id = h.giver_id JOIN users r ON r.id = h.receiver_id
-        WHERE h.id = ?', [$id])->fetch();
-    if (!$handover) {
-        fail(404, 'not_found', 'No such handover.');
-    }
-    $items = q('SELECT i.*, t.name AS type_name, hi.given_at, hi.received_at, hi.resolved_at
-        FROM handover_items hi JOIN items i ON i.id = hi.item_id JOIN item_types t ON t.id = i.item_type_id
-        WHERE hi.handover_id = ? ORDER BY i.sku', [$id])->fetchAll();
-    return [
-        'id' => $handover['id'],
-        'type' => $handover['type'],
-        'status' => $handover['status'],
-        'created_at' => $handover['created_at'],
-        'closed_at' => $handover['closed_at'],
-        'giver' => ['id' => $handover['giver_id'], 'name' => $handover['giver_name']],
-        'receiver' => ['id' => $handover['receiver_id'], 'name' => $handover['receiver_name']],
-        'items' => array_map(fn (array $item) => item_view($item)
-            + ['given_at' => $item['given_at'], 'received_at' => $item['received_at'], 'resolved_at' => $item['resolved_at']], $items),
+    // Per type: who may give, which role receives, the status a mat must have, the status it gets,
+    // whether the receiver's scan is needed, and whether the move counts as a wash.
+    // A wash is counted once: when the washing house manager scans the washed mat out (Handover C).
+    public const TYPES = [
+        'inventory_to_driver' => ['giver' => ['inventory', 'outbound'], 'receiver' => 'driver',
+            'from' => 'qc_passed', 'to' => 'out_for_delivery', 'two_sided' => true, 'wash' => false],
+        'driver_to_washing' => ['giver' => ['driver'], 'receiver' => 'washing',
+            'from' => 'collected', 'to' => 'in_washing', 'two_sided' => true, 'wash' => false],
+        'washing_to_inventory' => ['giver' => ['washing'], 'receiver' => 'inventory',
+            'from' => 'in_washing', 'to' => 'ready', 'two_sided' => false, 'wash' => true],
+        'driver_to_inventory' => ['giver' => ['driver'], 'receiver' => 'inventory',
+            'from' => 'refused', 'to' => 'ready', 'two_sided' => true, 'wash' => false],
+        'inventory_to_washing' => ['giver' => ['inventory'], 'receiver' => 'washing',
+            'from' => 'rewash', 'to' => 'in_washing', 'two_sided' => true, 'wash' => false],
     ];
-}
 
-function handovers_open(Request $req, array $user): array
-{
-    $type = enum_in($req->body, 'type', array_keys(HANDOVERS));
-    $receiverId = int_in($req->body, 'receiver_id');
-    $rule = HANDOVERS[$type];
-    if (!in_array($user['role'], $rule['giver'], true)) {
-        fail(403, 'forbidden', "Your role cannot give in a $type handover.");
-    }
-    if (!q('SELECT 1 FROM users WHERE id = ? AND role = ? AND is_active = 1', [$receiverId, $rule['receiver']])->fetch()) {
-        fail(422, 'invalid_reference', "The receiver must be an active {$rule['receiver']} user.");
-    }
-    return tx(function () use ($type, $receiverId, $user): array {
-        // Opening the same handover twice (a retry on a bad connection) gives the open one back.
-        $open = q("SELECT id FROM handovers WHERE type = ? AND giver_id = ? AND receiver_id = ? AND status = 'open' FOR UPDATE",
-            [$type, $user['id'], $receiverId])->fetch();
-        if ($open) {
-            return ['handover' => handover_view($open['id'])];
-        }
-        q('INSERT INTO handovers (type, giver_id, receiver_id) VALUES (?, ?, ?)', [$type, $user['id'], $receiverId]);
-        return ['handover' => handover_view((int) db()->lastInsertId())];
-    });
-}
-
-/** One scan into a handover. Who calls decides whether it counts as giving or as receiving. */
-function handovers_scan(Request $req, array $user, int $id): array
-{
-    $source = source_in($req->body);
-    $epcs = reads_in($req->body);
-    return tx(function () use ($source, $epcs, $user, $id): array {
-        $handover = q('SELECT * FROM handovers WHERE id = ? FOR UPDATE', [$id])->fetch();
-        if (!$handover) {
+    /** One handover with its two people and its pile. 404 when unknown. */
+    private static function view(int $id): array
+    {
+        $handover = row('SELECT h.*, g.name AS giver_name, r.name AS receiver_name
+            FROM handovers h JOIN users g ON g.id = h.giver_id JOIN users r ON r.id = h.receiver_id
+            WHERE h.id = ?', [$id]);
+        if ($handover === null) {
             fail(404, 'not_found', 'No such handover.');
         }
-        $side = match ($user['id']) {
-            $handover['giver_id'] => 'give',
-            $handover['receiver_id'] => 'receive',
-            default => fail(403, 'forbidden', 'This is not your handover.'),
-        };
-        if ($handover['status'] !== 'open') {
-            fail(409, 'closed', 'This handover is closed.');
+        $items = rows('SELECT i.*, t.name AS type_name, hi.given_at, hi.received_at, hi.resolved_at
+            FROM handover_items hi JOIN items i ON i.id = hi.item_id JOIN item_types t ON t.id = i.item_type_id
+            WHERE hi.handover_id = ? ORDER BY i.sku', [$id]);
+        return [
+            'id' => $handover['id'],
+            'type' => $handover['type'],
+            'status' => $handover['status'],
+            'created_at' => $handover['created_at'],
+            'closed_at' => $handover['closed_at'],
+            'giver' => ['id' => $handover['giver_id'], 'name' => $handover['giver_name']],
+            'receiver' => ['id' => $handover['receiver_id'], 'name' => $handover['receiver_name']],
+            'items' => array_map(fn (array $item) => Scan::view($item)
+                + ['given_at' => $item['given_at'], 'received_at' => $item['received_at'], 'resolved_at' => $item['resolved_at']], $items),
+        ];
+    }
+
+    /** The caller opens a handover as giver. */
+    public function open(Request $request): array
+    {
+        $in = $request->validate([
+            'type' => 'required|in:' . implode(',', array_keys(self::TYPES)),
+            'receiver_id' => 'required|integer|min:0',
+        ]);
+        $type = $in['type'];
+        $receiverId = (int) $in['receiver_id'];
+        $user = $request->user();
+        $rule = self::TYPES[$type];
+        if (!in_array($user->role, $rule['giver'], true)) {
+            fail(403, 'forbidden', "Your role cannot give in a $type handover.");
         }
-
-        $items = items_by_epc($epcs, true);
-        $rows = $items === [] ? [] : array_column(
-            q('SELECT * FROM handover_items WHERE handover_id = ? AND item_id IN (' . marks($items) . ')',
-                [$id, ...array_column($items, 'id')])->fetchAll(),
-            null, 'item_id');
-
-        $results = [];
-        foreach ($epcs as $epc) {
-            $item = $items[$epc] ?? null;
-            if ($item === null) {
-                $results[] = scan_result($epc, 'unknown', null);
-                continue;
+        if (DB::scalar('SELECT 1 FROM users WHERE id = ? AND role = ? AND is_active = 1', [$receiverId, $rule['receiver']]) === null) {
+            fail(422, 'invalid_reference', "The receiver must be an active {$rule['receiver']} user.");
+        }
+        return DB::transaction(function () use ($type, $receiverId, $user): array {
+            // Opening the same handover twice (a retry on a bad connection) gives the open one back.
+            $open = row("SELECT id FROM handovers WHERE type = ? AND giver_id = ? AND receiver_id = ? AND status = 'open' FOR UPDATE",
+                [$type, $user->id, $receiverId]);
+            if ($open !== null) {
+                return ['handover' => self::view($open['id'])];
             }
-            $row = $rows[$item['id']] ?? null;
-            $results[] = $side === 'give'
-                ? handover_give($handover, $item, $row, $user, $source)
-                : handover_receive($handover, $item, $row, $user, $source);
+            DB::insert('INSERT INTO handovers (type, giver_id, receiver_id) VALUES (?, ?, ?)', [$type, $user->id, $receiverId]);
+            return ['handover' => self::view((int) DB::getPdo()->lastInsertId())];
+        });
+    }
+
+    /** One scan into a handover. Who calls decides whether it counts as giving or as receiving. */
+    public function scan(Request $request, int $id): array
+    {
+        $source = Scan::source($request->all());
+        $epcs = Scan::reads($request->all());
+        $user = $request->user();
+        return DB::transaction(function () use ($source, $epcs, $user, $id): array {
+            $handover = row('SELECT * FROM handovers WHERE id = ? FOR UPDATE', [$id]);
+            if ($handover === null) {
+                fail(404, 'not_found', 'No such handover.');
+            }
+            $side = match ($user->id) {
+                $handover['giver_id'] => 'give',
+                $handover['receiver_id'] => 'receive',
+                default => fail(403, 'forbidden', 'This is not your handover.'),
+            };
+            if ($handover['status'] !== 'open') {
+                fail(409, 'closed', 'This handover is closed.');
+            }
+
+            $items = Scan::itemsByEpc($epcs, true);
+            $lines = $items === [] ? [] : array_column(
+                rows('SELECT * FROM handover_items WHERE handover_id = ? AND item_id IN (' . marks($items) . ')',
+                    [$id, ...array_column($items, 'id')]),
+                null, 'item_id');
+
+            $results = [];
+            foreach ($epcs as $epc) {
+                $item = $items[$epc] ?? null;
+                if ($item === null) {
+                    $results[] = Scan::result($epc, 'unknown', null);
+                    continue;
+                }
+                $line = $lines[$item['id']] ?? null;
+                $results[] = $side === 'give'
+                    ? self::give($handover, $item, $line, $user, $source)
+                    : self::receive($handover, $item, $line, $user, $source);
+            }
+
+            // The receiver sees which mats the giver scanned and he has not.
+            $missing = $side !== 'receive' ? [] : array_map(Scan::view(...), rows(Scan::ITEM_SELECT
+                . ' JOIN handover_items hi ON hi.item_id = i.id
+                    WHERE hi.handover_id = ? AND hi.given_at IS NOT NULL AND hi.received_at IS NULL ORDER BY i.sku', [$id]));
+            return ['results' => $results, 'missing' => $missing];
+        });
+    }
+
+    /** The giver scans one mat. $line is the mat's row in this handover, or null when it has none yet. */
+    private static function give(array $handover, array $item, ?array $line, User $user, string $source): array
+    {
+        $rule = self::TYPES[$handover['type']];
+        $epc = $item['epc'];
+        if ($line !== null && $line['given_at'] !== null) {
+            return Scan::result($epc, 'found', $item);   // a second scan: nothing to change
+        }
+        if ($item['status'] !== $rule['from']) {
+            return Scan::result($epc, 'rejected', $item, "{$item['sku']} is {$item['status']}, not {$rule['from']}.");
+        }
+        if ($user->role === 'driver' && $item['holder_user_id'] !== $user->id) {
+            return Scan::result($epc, 'rejected', $item, "{$item['sku']} is not on your van.");
+        }
+        // "In another handover" means: given there and still waiting for that receiver's scan.
+        $elsewhere = DB::scalar("SELECT 1 FROM handover_items hi JOIN handovers h ON h.id = hi.handover_id
+            WHERE hi.item_id = ? AND hi.given_at IS NOT NULL AND hi.received_at IS NULL
+              AND h.status = 'open' AND h.type <> 'washing_to_inventory' AND h.id <> ? LIMIT 1",
+            [$item['id'], $handover['id']]);
+        if ($elsewhere !== null) {
+            return Scan::result($epc, 'rejected', $item, "{$item['sku']} is already in another open handover.");
         }
 
-        // The receiver sees which mats the giver scanned and he has not.
-        $missing = $side !== 'receive' ? [] : array_map('item_view', q(ITEM_SELECT
-            . ' JOIN handover_items hi ON hi.item_id = i.id
-                WHERE hi.handover_id = ? AND hi.given_at IS NOT NULL AND hi.received_at IS NULL ORDER BY i.sku', [$id])->fetchAll());
-        return ['results' => $results, 'missing' => $missing];
-    });
-}
-
-function handover_give(array $handover, array $item, ?array $row, array $user, string $source): array
-{
-    $rule = HANDOVERS[$handover['type']];
-    $epc = $item['epc'];
-    if ($row !== null && $row['given_at'] !== null) {
-        return scan_result($epc, 'found', $item);   // a second scan: nothing to change
-    }
-    if ($item['status'] !== $rule['from']) {
-        return scan_result($epc, 'rejected', $item, "{$item['sku']} is {$item['status']}, not {$rule['from']}.");
-    }
-    if ($user['role'] === 'driver' && $item['holder_user_id'] !== $user['id']) {
-        return scan_result($epc, 'rejected', $item, "{$item['sku']} is not on your van.");
-    }
-    // "In another handover" means: given there and still waiting for that receiver's scan.
-    $elsewhere = q("SELECT 1 FROM handover_items hi JOIN handovers h ON h.id = hi.handover_id
-        WHERE hi.item_id = ? AND hi.given_at IS NOT NULL AND hi.received_at IS NULL
-          AND h.status = 'open' AND h.type <> 'washing_to_inventory' AND h.id <> ?",
-        [$item['id'], $handover['id']])->fetch();
-    if ($elsewhere) {
-        return scan_result($epc, 'rejected', $item, "{$item['sku']} is already in another open handover.");
+        DB::insert('INSERT INTO handover_items (handover_id, item_id, given_at) VALUES (?, ?, UTC_TIMESTAMP())
+            ON DUPLICATE KEY UPDATE given_at = UTC_TIMESTAMP()', [$handover['id'], $item['id']]);
+        $receivedAlready = $line !== null && $line['received_at'] !== null;
+        $after = !$rule['two_sided'] || $receivedAlready ? self::move($handover, $item) + $item : $item;
+        Scan::log($item, $user->id, 'handover_give', $after['status'], $source, ['handover_id' => $handover['id']]);
+        return Scan::result($epc, 'found', $after);
     }
 
-    q('INSERT INTO handover_items (handover_id, item_id, given_at) VALUES (?, ?, UTC_TIMESTAMP())
-       ON DUPLICATE KEY UPDATE given_at = UTC_TIMESTAMP()', [$handover['id'], $item['id']]);
-    $receivedAlready = $row !== null && $row['received_at'] !== null;
-    $after = !$rule['two_sided'] || $receivedAlready ? handover_move($handover, $item) + $item : $item;
-    log_event($item, $user['id'], 'handover_give', $after['status'], $source, ['handover_id' => $handover['id']]);
-    return scan_result($epc, 'found', $after);
-}
+    /** The receiver scans one mat. */
+    private static function receive(array $handover, array $item, ?array $line, User $user, string $source): array
+    {
+        $epc = $item['epc'];
+        $given = $line !== null && $line['given_at'] !== null;
+        $result = $given ? 'found' : 'not_on_list';
+        if ($line !== null && $line['received_at'] !== null) {
+            return Scan::result($epc, $result, $item);   // a second scan: nothing to change
+        }
 
-function handover_receive(array $handover, array $item, ?array $row, array $user, string $source): array
-{
-    $epc = $item['epc'];
-    $given = $row !== null && $row['given_at'] !== null;
-    $result = $given ? 'found' : 'not_on_list';
-    if ($row !== null && $row['received_at'] !== null) {
-        return scan_result($epc, $result, $item);   // a second scan: nothing to change
+        // A mat the giver did not scan is still recorded: it shows up as a handover issue for the office.
+        DB::insert('INSERT INTO handover_items (handover_id, item_id, received_at) VALUES (?, ?, UTC_TIMESTAMP())
+            ON DUPLICATE KEY UPDATE received_at = UTC_TIMESTAMP()', [$handover['id'], $item['id']]);
+        $after = $given && self::TYPES[$handover['type']]['two_sided'] ? self::move($handover, $item) + $item : $item;
+        Scan::log($item, $user->id, 'handover_receive', $after['status'], $source, ['handover_id' => $handover['id']]);
+        return Scan::result($epc, $result, $after);
     }
 
-    // A mat the giver did not scan is still recorded: it shows up as a handover issue for the office.
-    q('INSERT INTO handover_items (handover_id, item_id, received_at) VALUES (?, ?, UTC_TIMESTAMP())
-       ON DUPLICATE KEY UPDATE received_at = UTC_TIMESTAMP()', [$handover['id'], $item['id']]);
-    $after = $given && HANDOVERS[$handover['type']]['two_sided'] ? handover_move($handover, $item) + $item : $item;
-    log_event($item, $user['id'], 'handover_receive', $after['status'], $source, ['handover_id' => $handover['id']]);
-    return scan_result($epc, $result, $after);
-}
-
-/**
- * Moves one mat to the status its handover type gives it, only if it still has the status the type expects.
- * Returns the fields that changed, or nothing when the mat did not move.
- * This "set new where still old" is what makes a second scan harmless.
- */
-function handover_move(array $handover, array $item): array
-{
-    $rule = HANDOVERS[$handover['type']];
-    $holder = $rule['to'] === 'out_for_delivery' ? $handover['receiver_id'] : null;
-    $today = today();
-    // Keep this order: MySQL and MariaDB assign left to right, so previous_wash_date gets the old current date.
-    $wash = $rule['wash'] ? ', previous_wash_date = current_wash_date, current_wash_date = ?, wash_count = wash_count + 1' : '';
-    $params = [$rule['to'], $holder, ...($rule['wash'] ? [$today] : []), $item['id'], $rule['from']];
-    $moved = q("UPDATE items SET status = ?, holder_user_id = ?$wash WHERE id = ? AND status = ?", $params)->rowCount();
-    if ($moved !== 1) {
-        return [];
+    /**
+     * Moves one mat to the status its handover type gives it, only if it still has the status the type expects.
+     * Returns the fields that changed, or nothing when the mat did not move.
+     * This "set new where still old" in one query is what makes a second scan harmless. Never load, change and save.
+     */
+    private static function move(array $handover, array $item): array
+    {
+        $rule = self::TYPES[$handover['type']];
+        $holder = $rule['to'] === 'out_for_delivery' ? $handover['receiver_id'] : null;
+        $today = today();
+        // Keep this order: MySQL and MariaDB assign left to right, so previous_wash_date gets the old current date.
+        $wash = $rule['wash'] ? ', previous_wash_date = current_wash_date, current_wash_date = ?, wash_count = wash_count + 1' : '';
+        $params = [$rule['to'], $holder, ...($rule['wash'] ? [$today] : []), $item['id'], $rule['from']];
+        $moved = DB::update("UPDATE items SET status = ?, holder_user_id = ?$wash WHERE id = ? AND status = ?", $params);
+        if ($moved !== 1) {
+            return [];
+        }
+        $changed = ['status' => $rule['to'], 'holder_user_id' => $holder];
+        if ($rule['wash']) {
+            $changed += ['wash_count' => $item['wash_count'] + 1, 'current_wash_date' => $today,
+                'previous_wash_date' => $item['current_wash_date']];
+        }
+        return $changed;
     }
-    $changed = ['status' => $rule['to'], 'holder_user_id' => $holder];
-    if ($rule['wash']) {
-        $changed += ['wash_count' => $item['wash_count'] + 1, 'current_wash_date' => $today,
-            'previous_wash_date' => $item['current_wash_date']];
-    }
-    return $changed;
 }
 ```
 
-In `site/app/bootstrap.php` replace the file list:
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-foreach (['db', 'http', 'kernel', 'auth', 'refdata', 'users', 'scan', 'items', 'handovers'] as $file) {
-    require __DIR__ . "/$file.php";
-}
-```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
-
-```php
-    ['POST', '/handovers',           $scanners, 'handovers_open'],
-    ['POST', '/handovers/{id}/scan', $scanners, 'handovers_scan'],
+    Route::post('/handovers', [C\HandoverController::class, 'open'])->middleware($scanners);
+    Route::post('/handovers/{id}/scan', [C\HandoverController::class, 'scan'])->middleware($scanners);
 ```
 
 - [ ] **Step 5: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/HandoverScanTest.php`
-Expected: `OK (14 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/HandoverScanTest.php)`
+Expected: `Tests:    14 passed`.
 
-`test_only_the_two_people_of_a_handover_may_scan_into_it` expects `403 forbidden` for the office too: the route's role check refuses the office before the handler runs.
+`test_only_the_two_people_of_a_handover_may_scan_into_it` expects `403 forbidden` for the office too: the route's role check refuses the office before the controller runs.
 
 - [ ] **Step 6: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (74 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    73 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.6-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.6"/' composer.json
-git add site/app/handovers.php site/app/bootstrap.php site/app/routes.php tests/ApiTestCase.php tests/HandoverScanTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.6"/' site/composer.json
+git add site README.md
 git commit -m "Add handover opening and two-sided scanning at 0.4.6."
 ```
 
@@ -3178,11 +3216,11 @@ git commit -m "Add handover opening and two-sided scanning at 0.4.6."
 ### Task 8: Handovers: close, lists, issues and receivers
 
 **Files:**
-- Modify: `site/app/handovers.php` (add functions at the end), `site/app/routes.php`
-- Test: `tests/HandoverCloseTest.php`
+- Modify: `site/app/Http/Controllers/HandoverController.php` (add members at the end of the class), `site/routes/api.php`
+- Test: `site/tests/Feature/HandoverCloseTest.php`
 
 **Interfaces:**
-- Consumes: `HANDOVERS`, `handover_view()`, `q()`, `tx()`, `str_in()`, `enum_in()`, and the test helpers `openHandover()` and `scanHandover()` from Task 7.
+- Consumes: `HandoverController::TYPES`, `HandoverController::view()`, `rows()`, `row()`, `DB::transaction()`, `$request->validate()`, and the test helpers `openHandover()` and `scanHandover()` from Task 7.
 - Produces routes:
   - `POST /handovers/{id}/close` (all roles) — the receiver closes; for `washing_to_inventory` the giver or the receiver; the office may close any → `{"handover": {...}}`
   - `GET /handovers` (all roles) — office: all; others: the ones they give or receive → `{"handovers": [{id, type, status, created_at, closed_at, giver_id, giver_name, receiver_id, receiver_name, given, received}]}`
@@ -3195,12 +3233,17 @@ A handover issue is a mat in a **closed** handover with only one of the two scan
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/HandoverCloseTest.php`:
+Create `site/tests/Feature/HandoverCloseTest.php`:
 
 ```php
 <?php
 /** Closing a handover, the handover lists per role, the office's issue list, and the list of possible receivers. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class HandoverCloseTest extends ApiTestCase
 {
@@ -3298,8 +3341,8 @@ final class HandoverCloseTest extends ApiTestCase
 
         $this->ok($this->api('POST', "/handovers/$handover/items/$given/resolve", ['note' => 'Was left on the shelf']));
         $this->assertSame(['MOCK-0003'], array_column($this->issues(), 'sku'));
-        $row = q('SELECT resolved_by, resolution_note, resolved_at FROM handover_items WHERE handover_id = ? AND item_id = ?',
-            [$handover, $given])->fetch();
+        $row = row('SELECT resolved_by, resolution_note, resolved_at FROM handover_items WHERE handover_id = ? AND item_id = ?',
+            [$handover, $given]);
         $this->assertSame([$this->users['office'], 'Was left on the shelf'], [$row['resolved_by'], $row['resolution_note']]);
         $this->assertNotNull($row['resolved_at']);
 
@@ -3352,7 +3395,7 @@ final class HandoverCloseTest extends ApiTestCase
         $this->assertError(403, 'forbidden', $this->api('GET', '/handover-receivers?type=driver_to_washing'));
         $this->assertError(422, 'invalid_input', $this->api('GET', '/handover-receivers'));
 
-        q('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver2']]);
+        DB::statement('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver2']]);
         $rows = $this->ok($this->api('GET', '/handover-receivers?type=inventory_to_driver'))['rows'];
         $this->assertSame([['id' => $this->users['driver'], 'name' => 'Driver']], $rows);
     }
@@ -3361,56 +3404,59 @@ final class HandoverCloseTest extends ApiTestCase
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/HandoverCloseTest.php`
+Run: `(cd site && php artisan test tests/Feature/HandoverCloseTest.php)`
 Expected: FAIL: `close` and `handover-receivers` get `404 not_found`, `GET /handovers` gets `405 method_not_allowed`.
 
 - [ ] **Step 3: Write the implementation**
 
-Add at the end of `site/app/handovers.php`:
+Add these members at the end of the class in `site/app/Http/Controllers/HandoverController.php`:
 
 ```php
-// A mat in a closed handover with only one of its two scans, not handled yet by the office.
-// In Handover C the receiver's scan is optional, so "given only" is normal there.
-const HANDOVER_ISSUE = "h.status = 'closed' AND hi.resolved_at IS NULL
-    AND (hi.given_at IS NULL OR (hi.received_at IS NULL AND h.type <> 'washing_to_inventory'))";
+    // A mat in a closed handover with only one of its two scans, not handled yet by the office.
+    // In Handover C the receiver's scan is optional, so "given only" is normal there.
+    private const ISSUE = "h.status = 'closed' AND hi.resolved_at IS NULL
+        AND (hi.given_at IS NULL OR (hi.received_at IS NULL AND h.type <> 'washing_to_inventory'))";
 
-function handovers_close(Request $req, array $user, int $id): array
-{
-    return tx(function () use ($user, $id): array {
-        $handover = q('SELECT * FROM handovers WHERE id = ? FOR UPDATE', [$id])->fetch();
-        if (!$handover) {
-            fail(404, 'not_found', 'No such handover.');
-        }
-        // The receiver says "done". In Handover C the receiver may never show up, so the giver may close too.
-        $mayClose = HANDOVERS[$handover['type']]['two_sided']
-            ? [$handover['receiver_id']]
-            : [$handover['giver_id'], $handover['receiver_id']];
-        if ($user['role'] !== 'office' && !in_array($user['id'], $mayClose, true)) {
-            fail(403, 'forbidden', 'Only the receiver closes this handover.');
-        }
-        if ($handover['status'] !== 'open') {
-            fail(409, 'closed', 'This handover is already closed.');
-        }
-        q("UPDATE handovers SET status = 'closed', closed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'open'", [$id]);
-        return ['handover' => handover_view($id)];
-    });
-}
-
-function handovers_get(Request $req, array $user, int $id): array
-{
-    $handover = handover_view($id);
-    $mine = in_array($user['id'], [$handover['giver']['id'], $handover['receiver']['id']], true);
-    if ($user['role'] !== 'office' && !$mine) {
-        fail(403, 'forbidden', 'This is not your handover.');
+    public function close(Request $request, int $id): array
+    {
+        $user = $request->user();
+        return DB::transaction(function () use ($user, $id): array {
+            $handover = row('SELECT * FROM handovers WHERE id = ? FOR UPDATE', [$id]);
+            if ($handover === null) {
+                fail(404, 'not_found', 'No such handover.');
+            }
+            // The receiver says "done". In Handover C the receiver may never show up, so the giver may close too.
+            $mayClose = self::TYPES[$handover['type']]['two_sided']
+                ? [$handover['receiver_id']]
+                : [$handover['giver_id'], $handover['receiver_id']];
+            if ($user->role !== 'office' && !in_array($user->id, $mayClose, true)) {
+                fail(403, 'forbidden', 'Only the receiver closes this handover.');
+            }
+            if ($handover['status'] !== 'open') {
+                fail(409, 'closed', 'This handover is already closed.');
+            }
+            DB::update("UPDATE handovers SET status = 'closed', closed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'open'", [$id]);
+            return ['handover' => self::view($id)];
+        });
     }
-    return ['handover' => $handover];
-}
 
-function handovers_list(Request $req, array $user): array
-{
-    $office = $user['role'] === 'office';
-    if ($office && ($req->query['issues'] ?? '') === '1') {
-        return ['issues' => q('SELECT h.id AS handover_id, h.type, h.closed_at, g.name AS giver_name, r.name AS receiver_name,
+    public function show(Request $request, int $id): array
+    {
+        $user = $request->user();
+        $handover = self::view($id);
+        $mine = in_array($user->id, [$handover['giver']['id'], $handover['receiver']['id']], true);
+        if ($user->role !== 'office' && !$mine) {
+            fail(403, 'forbidden', 'This is not your handover.');
+        }
+        return ['handover' => $handover];
+    }
+
+    public function index(Request $request): array
+    {
+        $user = $request->user();
+        $office = $user->role === 'office';
+        if ($office && $request->query('issues') === '1') {
+            return ['issues' => rows('SELECT h.id AS handover_id, h.type, h.closed_at, g.name AS giver_name, r.name AS receiver_name,
                     hi.given_at, hi.received_at, i.id AS item_id, i.sku, t.name AS type_name, i.status
                 FROM handover_items hi
                 JOIN handovers h ON h.id = hi.handover_id
@@ -3418,67 +3464,70 @@ function handovers_list(Request $req, array $user): array
                 JOIN item_types t ON t.id = i.item_type_id
                 JOIN users g ON g.id = h.giver_id
                 JOIN users r ON r.id = h.receiver_id
-                WHERE ' . HANDOVER_ISSUE . ' ORDER BY h.closed_at DESC, i.sku')->fetchAll()];
-    }
-    $where = $office ? '1 = 1' : '(h.giver_id = ? OR h.receiver_id = ?)';
-    $params = $office ? [] : [$user['id'], $user['id']];
-    // ponytail: the newest 100, no paging. Add paging when the office needs to look further back.
-    return ['handovers' => q("SELECT h.id, h.type, h.status, h.created_at, h.closed_at,
+                WHERE ' . self::ISSUE . ' ORDER BY h.closed_at DESC, i.sku')];
+        }
+        $where = $office ? '1 = 1' : '(h.giver_id = ? OR h.receiver_id = ?)';
+        $params = $office ? [] : [$user->id, $user->id];
+        // ponytail: the newest 100, no paging. Add paging when the office needs to look further back.
+        return ['handovers' => rows("SELECT h.id, h.type, h.status, h.created_at, h.closed_at,
                 h.giver_id, g.name AS giver_name, h.receiver_id, r.name AS receiver_name,
                 (SELECT COUNT(*) FROM handover_items hi WHERE hi.handover_id = h.id AND hi.given_at IS NOT NULL) AS given,
                 (SELECT COUNT(*) FROM handover_items hi WHERE hi.handover_id = h.id AND hi.received_at IS NOT NULL) AS received
             FROM handovers h JOIN users g ON g.id = h.giver_id JOIN users r ON r.id = h.receiver_id
-            WHERE $where ORDER BY h.status = 'open' DESC, h.id DESC LIMIT 100", $params)->fetchAll()];
-}
+            WHERE $where ORDER BY h.status = 'open' DESC, h.id DESC LIMIT 100", $params)];
+    }
 
-function handovers_resolve(Request $req, array $user, int $id, int $itemId): array
-{
-    $note = str_in($req->body, 'note', 500);
-    $resolved = q('UPDATE handover_items hi JOIN handovers h ON h.id = hi.handover_id
+    /** The office marks one handover issue as handled, with a note. */
+    public function resolve(Request $request, int $id, int $itemId): array
+    {
+        $in = $request->validate(['note' => 'required|string|max:500']);
+        $resolved = DB::update('UPDATE handover_items hi JOIN handovers h ON h.id = hi.handover_id
             SET hi.resolved_at = UTC_TIMESTAMP(), hi.resolved_by = ?, hi.resolution_note = ?
-            WHERE hi.handover_id = ? AND hi.item_id = ? AND ' . HANDOVER_ISSUE,
-        [$user['id'], $note, $id, $itemId])->rowCount();
-    if ($resolved !== 1) {
-        fail(409, 'not_an_issue', 'This mat is not an open handover issue.');
+            WHERE hi.handover_id = ? AND hi.item_id = ? AND ' . self::ISSUE,
+            [$request->user()->id, $in['note'], $id, $itemId]);
+        if ($resolved !== 1) {
+            fail(409, 'not_an_issue', 'This mat is not an open handover issue.');
+        }
+        return ['ok' => true];
     }
-    return ['ok' => true];
-}
 
-/** The people a giver can pick as receiver for one handover type. */
-function handover_receivers(Request $req, array $user): array
-{
-    $rule = HANDOVERS[enum_in($req->query, 'type', array_keys(HANDOVERS))];
-    if (!in_array($user['role'], $rule['giver'], true)) {
-        fail(403, 'forbidden', 'Your role cannot give in this handover.');
+    /** The people a giver can pick as receiver for one handover type. */
+    public function receivers(Request $request): array
+    {
+        $in = $request->validate(['type' => 'required|in:' . implode(',', array_keys(self::TYPES))]);
+        $rule = self::TYPES[$in['type']];
+        if (!in_array($request->user()->role, $rule['giver'], true)) {
+            fail(403, 'forbidden', 'Your role cannot give in this handover.');
+        }
+        return ['rows' => rows('SELECT id, name FROM users WHERE role = ? AND is_active = 1 ORDER BY name', [$rule['receiver']])];
     }
-    return ['rows' => q('SELECT id, name FROM users WHERE role = ? AND is_active = 1 ORDER BY name', [$rule['receiver']])->fetchAll()];
-}
 ```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-    ['GET',  '/handovers',                               $all,      'handovers_list'],
-    ['GET',  '/handovers/{id}',                          $all,      'handovers_get'],
-    ['POST', '/handovers/{id}/close',                    $all,      'handovers_close'],
-    ['POST', '/handovers/{id}/items/{itemId}/resolve',   [$O],      'handovers_resolve'],
-    ['GET',  '/handover-receivers',                      $scanners, 'handover_receivers'],
+
+    Route::get('/handovers', [C\HandoverController::class, 'index']);
+    Route::get('/handovers/{id}', [C\HandoverController::class, 'show']);
+    Route::post('/handovers/{id}/close', [C\HandoverController::class, 'close']);
+    Route::post('/handovers/{id}/items/{itemId}/resolve', [C\HandoverController::class, 'resolve'])->middleware('role:office');
+    Route::get('/handover-receivers', [C\HandoverController::class, 'receivers'])->middleware($scanners);
 ```
 
 - [ ] **Step 4: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/HandoverCloseTest.php`
-Expected: `OK (10 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/HandoverCloseTest.php)`
+Expected: `Tests:    10 passed`.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (84 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    83 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.7-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.7"/' composer.json
-git add site/app/handovers.php site/app/routes.php tests/HandoverCloseTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.7"/' site/composer.json
+git add site README.md
 git commit -m "Add handover closing, lists, issues and receivers at 0.4.7."
 ```
 
@@ -3487,14 +3536,14 @@ git commit -m "Add handover closing, lists, issues and receivers at 0.4.7."
 ### Task 9: Contracts
 
 **Files:**
-- Create: `site/app/contracts.php`
-- Modify: `site/app/bootstrap.php` (file list), `site/app/routes.php`
-- Test: `tests/ContractsTest.php`
+- Create: `site/app/Http/Controllers/ContractController.php`
+- Modify: `site/routes/api.php`
+- Test: `site/tests/Feature/ContractsTest.php`
 
 **Interfaces:**
-- Consumes: `q()`, `tx()`, `today()`, `fail()`, `int_in()`, `date_in()`.
+- Consumes: `rows()`, `row()`, `today()`, `fail()`, `DB::transaction()`, `$request->validate()`.
 - Produces:
-  - `contract_view(int $id): array` — `id, customer_id, customer_name, swap_interval_days, status, start_date, end_date, lines [{id, zone_id, zone_name, building_id, building_name, item_type_id, type_name, quantity}]`
+  - A contract in an answer is `id, customer_id, customer_name, swap_interval_days, status, start_date, end_date, lines [{id, zone_id, zone_name, building_id, building_name, item_type_id, type_name, quantity}]`
   - Routes, office only:
     - `GET /contracts` → `{"rows": [...]}`
     - `POST /contracts` — `{customer_id, swap_interval_days, start_date, lines?: [{zone_id, item_type_id, quantity}]}` → `{"contract": {...}}`
@@ -3506,12 +3555,17 @@ Rules: a contract starts as `draft`. Lines and start date change only while it i
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/ContractsTest.php`:
+Create `site/tests/Feature/ContractsTest.php`:
 
 ```php
 <?php
 /** Contracts: lines per zone, activation into delivery tasks, changing n, and ending. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class ContractsTest extends ApiTestCase
 {
@@ -3523,7 +3577,7 @@ final class ContractsTest extends ApiTestCase
 
     private function tasksOf(int $contractId): array
     {
-        return q('SELECT * FROM tasks WHERE contract_id = ? ORDER BY id', [$contractId])->fetchAll();
+        return rows('SELECT * FROM tasks WHERE contract_id = ? ORDER BY id', [$contractId]);
     }
 
     public function test_office_makes_a_draft_contract_with_lines(): void
@@ -3553,7 +3607,7 @@ final class ContractsTest extends ApiTestCase
         $this->assertError(422, 'invalid_input', $this->api('POST', '/contracts', $this->newContract(['lines' => 'none'])));
         $same = ['zone_id' => 1, 'item_type_id' => 1, 'quantity' => 1];
         $this->assertError(409, 'duplicate', $this->api('POST', '/contracts', $this->newContract(['lines' => [$same, $same]])));
-        $this->assertSame(2, (int) q('SELECT COUNT(*) FROM contracts')->fetchColumn());
+        $this->assertSame(2, (int) DB::scalar('SELECT COUNT(*) FROM contracts'));
     }
 
     public function test_activating_creates_one_delivery_task_per_building(): void
@@ -3580,7 +3634,7 @@ final class ContractsTest extends ApiTestCase
         $this->loginAs('office');
         $id = $this->ok($this->api('POST', '/contracts', $this->newContract(['lines' => []])))['contract']['id'];
         $this->assertError(422, 'no_lines', $this->api('POST', "/contracts/$id/activate"));
-        $this->assertSame('draft', q('SELECT status FROM contracts WHERE id = ?', [$id])->fetchColumn());
+        $this->assertSame('draft', DB::scalar('SELECT status FROM contracts WHERE id = ?', [$id]));
     }
 
     public function test_lines_and_start_date_change_only_while_draft(): void
@@ -3601,8 +3655,8 @@ final class ContractsTest extends ApiTestCase
     {
         $this->loginAs('office');
         $this->ok($this->api('POST', '/contracts/1/activate'));
-        q("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('swap', 1, 1, '2026-11-02')");
-        q("INSERT INTO tasks (type, contract_id, building_id, due_date, status, completed_at, photo_path, signature_path)
+        DB::statement("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('swap', 1, 1, '2026-11-02')");
+        DB::statement("INSERT INTO tasks (type, contract_id, building_id, due_date, status, completed_at, photo_path, signature_path)
            VALUES ('swap', 1, 1, '2026-10-20', 'done', UTC_TIMESTAMP(), 'p.jpg', 's.png')");
         $before = $this->tasksOf(1);
 
@@ -3619,7 +3673,7 @@ final class ContractsTest extends ApiTestCase
         $this->loginAs('office');
         $this->assertError(409, 'not_active', $this->api('POST', '/contracts/1/end'));   // still a draft
         $this->ok($this->api('POST', '/contracts/1/activate'));
-        q("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('swap', 1, 1, '2026-11-02')");
+        DB::statement("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('swap', 1, 1, '2026-11-02')");
 
         $contract = $this->ok($this->api('POST', '/contracts/1/end'))['contract'];
         $this->assertSame(['ended', max(today(), $contract['start_date'])], [$contract['status'], $contract['end_date']]);
@@ -3631,7 +3685,7 @@ final class ContractsTest extends ApiTestCase
 
     public function test_a_contract_can_be_ended_before_its_start_date(): void
     {
-        q("UPDATE contracts SET start_date = '2099-01-01' WHERE id = 1");
+        DB::statement("UPDATE contracts SET start_date = '2099-01-01' WHERE id = 1");
         $this->loginAs('office');
         $this->ok($this->api('POST', '/contracts/1/activate'));
         $contract = $this->ok($this->api('POST', '/contracts/1/end'))['contract'];
@@ -3650,218 +3704,219 @@ final class ContractsTest extends ApiTestCase
 
 - [ ] **Step 2: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/ContractsTest.php`
+Run: `(cd site && php artisan test tests/Feature/ContractsTest.php)`
 Expected: FAIL, the tests get `404 not_found`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `site/app/contracts.php`:
+Create `site/app/Http/Controllers/ContractController.php`:
 
 ```php
 <?php
 /** Contracts: how many mats of which type lie in which zone, and n, the days between swaps. Activation creates the delivery tasks. */
 declare(strict_types=1);
 
-function contract_view(int $id): array
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+final class ContractController extends Controller
 {
-    $contract = q('SELECT c.id, c.customer_id, cu.name AS customer_name, c.swap_interval_days, c.status, c.start_date, c.end_date
-        FROM contracts c JOIN customers cu ON cu.id = c.customer_id WHERE c.id = ?', [$id])->fetch();
-    if (!$contract) {
-        fail(404, 'not_found', 'No such contract.');
+    // n: the days between two swaps.
+    private const INTERVAL_RULE = 'integer|between:1,365';
+
+    private const LINE_RULES = [
+        'lines' => 'array|list',
+        'lines.*.zone_id' => 'required|integer|min:0',
+        'lines.*.item_type_id' => 'required|integer|min:0',
+        'lines.*.quantity' => 'required|integer|between:1,1000',
+    ];
+
+    /** One contract with its lines. 404 when unknown. */
+    private static function view(int $id): array
+    {
+        $contract = row('SELECT c.id, c.customer_id, cu.name AS customer_name, c.swap_interval_days, c.status, c.start_date, c.end_date
+            FROM contracts c JOIN customers cu ON cu.id = c.customer_id WHERE c.id = ?', [$id]);
+        if ($contract === null) {
+            fail(404, 'not_found', 'No such contract.');
+        }
+        $contract['lines'] = rows('SELECT l.id, l.zone_id, z.name AS zone_name, z.building_id, b.name AS building_name,
+                l.item_type_id, t.name AS type_name, l.quantity
+            FROM contract_lines l
+            JOIN zones z ON z.id = l.zone_id
+            JOIN buildings b ON b.id = z.building_id
+            JOIN item_types t ON t.id = l.item_type_id
+            WHERE l.contract_id = ? ORDER BY b.name, z.name, t.name', [$id]);
+        return $contract;
     }
-    $contract['lines'] = q('SELECT l.id, l.zone_id, z.name AS zone_name, z.building_id, b.name AS building_name,
-            l.item_type_id, t.name AS type_name, l.quantity
-        FROM contract_lines l
-        JOIN zones z ON z.id = l.zone_id
-        JOIN buildings b ON b.id = z.building_id
-        JOIN item_types t ON t.id = l.item_type_id
-        WHERE l.contract_id = ? ORDER BY b.name, z.name, t.name', [$id])->fetchAll();
-    return $contract;
-}
 
-/** Locks one contract row for the rest of the transaction. */
-function contract_locked(int $id): array
-{
-    $contract = q('SELECT * FROM contracts WHERE id = ? FOR UPDATE', [$id])->fetch();
-    if (!$contract) {
-        fail(404, 'not_found', 'No such contract.');
+    /** Locks one contract row for the rest of the transaction. */
+    private static function locked(int $id): array
+    {
+        $contract = row('SELECT * FROM contracts WHERE id = ? FOR UPDATE', [$id]);
+        if ($contract === null) {
+            fail(404, 'not_found', 'No such contract.');
+        }
+        return $contract;
     }
-    return $contract;
-}
 
-/** n: the days between two swaps. */
-function interval_in(array $in): int
-{
-    $days = int_in($in, 'swap_interval_days');
-    if ($days < 1 || $days > 365) {
-        fail(422, 'invalid_input', 'swap_interval_days must be between 1 and 365.');
+    /** The validated lines as [zone id, type id, quantity]. Every zone must belong to the contract's customer. */
+    private static function lines(array $lines, int $customerId): array
+    {
+        $out = [];
+        foreach ($lines as $line) {
+            $zoneId = (int) $line['zone_id'];
+            $ofCustomer = DB::scalar('SELECT 1 FROM zones z JOIN buildings b ON b.id = z.building_id WHERE z.id = ? AND b.customer_id = ?',
+                [$zoneId, $customerId]);
+            if ($ofCustomer === null) {
+                fail(422, 'invalid_reference', "Zone $zoneId does not belong to this customer.");
+            }
+            $out[] = [$zoneId, (int) $line['item_type_id'], (int) $line['quantity']];
+        }
+        return $out;
     }
-    return $days;
-}
 
-/** The lines of a contract as [zone id, type id, quantity]. Every zone must belong to the contract's customer. */
-function contract_lines_in(array $in, int $customerId): array
-{
-    $lines = $in['lines'] ?? null;
-    if (!is_array($lines) || !array_is_list($lines)) {
-        fail(422, 'invalid_input', 'lines must be a list.');
+    /** Replaces the lines. Only ever called for a draft, when no task and no history depends on them yet. */
+    private static function saveLines(int $contractId, array $lines): void
+    {
+        DB::delete('DELETE FROM contract_lines WHERE contract_id = ?', [$contractId]);
+        foreach ($lines as [$zoneId, $typeId, $quantity]) {
+            DB::insert('INSERT INTO contract_lines (contract_id, zone_id, item_type_id, quantity) VALUES (?, ?, ?, ?)',
+                [$contractId, $zoneId, $typeId, $quantity]);
+        }
     }
-    $out = [];
-    foreach ($lines as $line) {
-        if (!is_array($line)) {
-            fail(422, 'invalid_input', 'Every line needs zone_id, item_type_id and quantity.');
-        }
-        $zoneId = int_in($line, 'zone_id');
-        $typeId = int_in($line, 'item_type_id');
-        $quantity = int_in($line, 'quantity');
-        if ($quantity < 1 || $quantity > 1000) {
-            fail(422, 'invalid_input', 'quantity must be between 1 and 1000.');
-        }
-        $zoneOfCustomer = q('SELECT 1 FROM zones z JOIN buildings b ON b.id = z.building_id WHERE z.id = ? AND b.customer_id = ?',
-            [$zoneId, $customerId])->fetch();
-        if (!$zoneOfCustomer) {
-            fail(422, 'invalid_reference', "Zone $zoneId does not belong to this customer.");
-        }
-        $out[] = [$zoneId, $typeId, $quantity];
+
+    public function index(): array
+    {
+        // ponytail: one query per contract. Fine for tens of contracts; join and group when there are hundreds.
+        $ids = array_column(rows('SELECT id FROM contracts ORDER BY id DESC'), 'id');
+        return ['rows' => array_map(self::view(...), $ids)];
     }
-    return $out;
-}
 
-/** Replaces the lines. Only ever called for a draft, when no task and no history depends on them yet. */
-function contract_save_lines(int $contractId, array $lines): void
-{
-    q('DELETE FROM contract_lines WHERE contract_id = ?', [$contractId]);
-    foreach ($lines as [$zoneId, $typeId, $quantity]) {
-        q('INSERT INTO contract_lines (contract_id, zone_id, item_type_id, quantity) VALUES (?, ?, ?, ?)',
-            [$contractId, $zoneId, $typeId, $quantity]);
+    public function store(Request $request): array
+    {
+        $in = $request->validate([
+            'customer_id' => 'required|integer|min:0',
+            'swap_interval_days' => 'required|' . self::INTERVAL_RULE,
+            'start_date' => 'required|date_format:Y-m-d',
+        ] + self::LINE_RULES);
+        $customerId = (int) $in['customer_id'];
+        if (DB::scalar('SELECT 1 FROM customers WHERE id = ?', [$customerId]) === null) {
+            fail(422, 'invalid_reference', 'Unknown customer.');
+        }
+        $lines = self::lines($in['lines'] ?? [], $customerId);
+        return DB::transaction(function () use ($in, $customerId, $lines): array {
+            DB::insert('INSERT INTO contracts (customer_id, swap_interval_days, start_date) VALUES (?, ?, ?)',
+                [$customerId, (int) $in['swap_interval_days'], $in['start_date']]);
+            $id = (int) DB::getPdo()->lastInsertId();
+            self::saveLines($id, $lines);
+            return ['contract' => self::view($id)];
+        });
     }
-}
 
-function contracts_list(Request $req, array $user): array
-{
-    // ponytail: one query per contract. Fine for tens of contracts; join and group when there are hundreds.
-    $ids = q('SELECT id FROM contracts ORDER BY id DESC')->fetchAll(PDO::FETCH_COLUMN);
-    return ['rows' => array_map('contract_view', $ids)];
-}
-
-function contracts_create(Request $req, array $user): array
-{
-    $in = $req->body;
-    $customerId = int_in($in, 'customer_id');
-    $days = interval_in($in);
-    $start = date_in($in, 'start_date');
-    if (!q('SELECT 1 FROM customers WHERE id = ?', [$customerId])->fetch()) {
-        fail(422, 'invalid_reference', 'Unknown customer.');
+    /** Changes only the fields that were sent. */
+    public function update(Request $request, int $id): array
+    {
+        $in = $request->validate([
+            'swap_interval_days' => 'sometimes|required|' . self::INTERVAL_RULE,
+            'start_date' => 'sometimes|required|date_format:Y-m-d',
+        ] + self::LINE_RULES);
+        $hasLines = $request->has('lines');   // an empty list counts: it removes every line
+        return DB::transaction(function () use ($in, $hasLines, $id): array {
+            $contract = self::locked($id);
+            if ($contract['status'] === 'ended') {
+                fail(409, 'ended', 'An ended contract cannot be changed.');
+            }
+            if (($hasLines || isset($in['start_date'])) && $contract['status'] !== 'draft') {
+                fail(409, 'not_draft', 'Lines and start date can only be changed while the contract is a draft.');
+            }
+            if (isset($in['start_date'])) {
+                DB::update('UPDATE contracts SET start_date = ? WHERE id = ?', [$in['start_date'], $id]);
+            }
+            if ($hasLines) {
+                self::saveLines($id, self::lines($in['lines'] ?? [], $contract['customer_id']));
+            }
+            if (isset($in['swap_interval_days'])) {
+                $days = (int) $in['swap_interval_days'];
+                DB::update('UPDATE contracts SET swap_interval_days = ? WHERE id = ?', [$days, $id]);
+                // An open swap task is due on D + old n. Moving it by the difference makes it D + new n.
+                DB::update("UPDATE tasks SET due_date = due_date + INTERVAL ? DAY WHERE contract_id = ? AND type = 'swap' AND status = 'open'",
+                    [$days - $contract['swap_interval_days'], $id]);
+            }
+            return ['contract' => self::view($id)];
+        });
     }
-    $lines = contract_lines_in($in + ['lines' => []], $customerId);
-    return tx(function () use ($customerId, $days, $start, $lines): array {
-        q('INSERT INTO contracts (customer_id, swap_interval_days, start_date) VALUES (?, ?, ?)', [$customerId, $days, $start]);
-        $id = (int) db()->lastInsertId();
-        contract_save_lines($id, $lines);
-        return ['contract' => contract_view($id)];
-    });
-}
 
-function contracts_update(Request $req, array $user, int $id): array
-{
-    $in = $req->body;
-    return tx(function () use ($in, $id): array {
-        $contract = contract_locked($id);
-        if ($contract['status'] === 'ended') {
-            fail(409, 'ended', 'An ended contract cannot be changed.');
-        }
-        $draftOnly = array_key_exists('lines', $in) || array_key_exists('start_date', $in);
-        if ($draftOnly && $contract['status'] !== 'draft') {
-            fail(409, 'not_draft', 'Lines and start date can only be changed while the contract is a draft.');
-        }
-        if (array_key_exists('start_date', $in)) {
-            q('UPDATE contracts SET start_date = ? WHERE id = ?', [date_in($in, 'start_date'), $id]);
-        }
-        if (array_key_exists('lines', $in)) {
-            contract_save_lines($id, contract_lines_in($in, $contract['customer_id']));
-        }
-        if (array_key_exists('swap_interval_days', $in)) {
-            $days = interval_in($in);
-            q('UPDATE contracts SET swap_interval_days = ? WHERE id = ?', [$days, $id]);
-            // An open swap task is due on D + old n. Moving it by the difference makes it D + new n.
-            q("UPDATE tasks SET due_date = due_date + INTERVAL ? DAY WHERE contract_id = ? AND type = 'swap' AND status = 'open'",
-                [$days - $contract['swap_interval_days'], $id]);
-        }
-        return ['contract' => contract_view($id)];
-    });
-}
+    /** Starts a draft contract: one delivery task per building that has lines, due on the start date. */
+    public function activate(int $id): array
+    {
+        return DB::transaction(function () use ($id): array {
+            $contract = self::locked($id);
+            if ($contract['status'] !== 'draft') {
+                fail(409, 'not_draft', "This contract is already {$contract['status']}.");
+            }
+            $buildingIds = array_column(rows('SELECT DISTINCT z.building_id FROM contract_lines l JOIN zones z ON z.id = l.zone_id
+                WHERE l.contract_id = ? ORDER BY z.building_id', [$id]), 'building_id');
+            if ($buildingIds === []) {
+                fail(422, 'no_lines', 'A contract needs at least one line before it can start.');
+            }
+            DB::update("UPDATE contracts SET status = 'active' WHERE id = ? AND status = 'draft'", [$id]);
+            $taskIds = [];
+            foreach ($buildingIds as $buildingId) {
+                DB::insert("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('delivery', ?, ?, ?)",
+                    [$id, $buildingId, $contract['start_date']]);
+                $taskIds[] = (int) DB::getPdo()->lastInsertId();
+            }
+            return ['contract' => self::view($id), 'task_ids' => $taskIds];
+        });
+    }
 
-function contracts_activate(Request $req, array $user, int $id): array
-{
-    return tx(function () use ($id): array {
-        $contract = contract_locked($id);
-        if ($contract['status'] !== 'draft') {
-            fail(409, 'not_draft', "This contract is already {$contract['status']}.");
-        }
-        $buildingIds = q('SELECT DISTINCT z.building_id FROM contract_lines l JOIN zones z ON z.id = l.zone_id
-            WHERE l.contract_id = ? ORDER BY z.building_id', [$id])->fetchAll(PDO::FETCH_COLUMN);
-        if ($buildingIds === []) {
-            fail(422, 'no_lines', 'A contract needs at least one line before it can start.');
-        }
-        q("UPDATE contracts SET status = 'active' WHERE id = ? AND status = 'draft'", [$id]);
-        $taskIds = [];
-        foreach ($buildingIds as $buildingId) {
-            q("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('delivery', ?, ?, ?)",
-                [$id, $buildingId, $contract['start_date']]);
-            $taskIds[] = (int) db()->lastInsertId();
-        }
-        return ['contract' => contract_view($id), 'task_ids' => $taskIds];
-    });
-}
-
-function contracts_end(Request $req, array $user, int $id): array
-{
-    return tx(function () use ($id): array {
-        $contract = contract_locked($id);
-        if ($contract['status'] !== 'active') {
-            fail(409, 'not_active', "Only an active contract can be ended. This one is {$contract['status']}.");
-        }
-        // The database refuses an end date before the start date, so a contract ended early ends on its start date.
-        q("UPDATE contracts SET status = 'ended', end_date = ? WHERE id = ? AND status = 'active'",
-            [max(today(), $contract['start_date']), $id]);
-        q("UPDATE tasks SET status = 'cancelled' WHERE contract_id = ? AND type = 'swap' AND status = 'open'", [$id]);
-        return ['contract' => contract_view($id)];
-    });
+    /** Ends an active contract and cancels its open swap tasks. */
+    public function end(int $id): array
+    {
+        return DB::transaction(function () use ($id): array {
+            $contract = self::locked($id);
+            if ($contract['status'] !== 'active') {
+                fail(409, 'not_active', "Only an active contract can be ended. This one is {$contract['status']}.");
+            }
+            // The database refuses an end date before the start date, so a contract ended early ends on its start date.
+            DB::update("UPDATE contracts SET status = 'ended', end_date = ? WHERE id = ? AND status = 'active'",
+                [max(today(), $contract['start_date']), $id]);
+            DB::update("UPDATE tasks SET status = 'cancelled' WHERE contract_id = ? AND type = 'swap' AND status = 'open'", [$id]);
+            return ['contract' => self::view($id)];
+        });
+    }
 }
 ```
 
-In `site/app/bootstrap.php` replace the file list:
+A mat type that does not exist, or the same zone and type twice, is refused by the database (`422 invalid_reference`, `409 duplicate`), and the transaction takes the half-made contract away again.
+
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-foreach (['db', 'http', 'kernel', 'auth', 'refdata', 'users', 'scan', 'items', 'handovers', 'contracts'] as $file) {
-    require __DIR__ . "/$file.php";
-}
-```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
-
-```php
-    ['GET',   '/contracts',               [$O], 'contracts_list'],
-    ['POST',  '/contracts',               [$O], 'contracts_create'],
-    ['PATCH', '/contracts/{id}',          [$O], 'contracts_update'],
-    ['POST',  '/contracts/{id}/activate', [$O], 'contracts_activate'],
-    ['POST',  '/contracts/{id}/end',      [$O], 'contracts_end'],
+    Route::get('/contracts', [C\ContractController::class, 'index'])->middleware('role:office');
+    Route::post('/contracts', [C\ContractController::class, 'store'])->middleware('role:office');
+    Route::patch('/contracts/{id}', [C\ContractController::class, 'update'])->middleware('role:office');
+    Route::post('/contracts/{id}/activate', [C\ContractController::class, 'activate'])->middleware('role:office');
+    Route::post('/contracts/{id}/end', [C\ContractController::class, 'end'])->middleware('role:office');
 ```
 
 - [ ] **Step 4: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/ContractsTest.php`
-Expected: `OK (9 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/ContractsTest.php)`
+Expected: `Tests:    9 passed`.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (93 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    92 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.8-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.8"/' composer.json
-git add site/app/contracts.php site/app/bootstrap.php site/app/routes.php tests/ContractsTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.8"/' site/composer.json
+git add site README.md
 git commit -m "Add contracts with activation and ending at 0.4.8."
 ```
 
@@ -3870,16 +3925,16 @@ git commit -m "Add contracts with activation and ending at 0.4.8."
 ### Task 10: Tasks: lists per role, assignment, needs per driver, collection
 
 **Files:**
-- Create: `site/app/tasks.php`
-- Modify: `site/app/bootstrap.php` (file list), `site/app/routes.php`, `tests/ApiTestCase.php` (one helper)
-- Test: `tests/TasksTest.php`
+- Create: `site/app/Http/Controllers/TaskController.php`
+- Modify: `site/routes/api.php`, `site/tests/ApiTestCase.php` (one helper)
+- Test: `site/tests/Feature/TasksTest.php`
 
 **Interfaces:**
-- Consumes: `q()`, `tx()`, `fail()`, `int_in()`, `date_in()`, `enum_in()`, and `POST /contracts/{id}/activate` from Task 9.
+- Consumes: `rows()`, `row()`, `fail()`, `DB::transaction()`, `$request->validate()`, and `POST /contracts/{id}/activate` from Task 9.
 - Produces:
-  - `const TASK_SELECT` — selects `id, type, status, due_date, completed_at, contract_id, building_id, previous_task_id, assigned_to, assigned_name, signed_name, issue_note, has_proof, building_name, street, postcode, city, area_name, customer_id, customer_name, contact_name, contact_phone` with table alias `t` for `tasks`
-  - `task_view(int $id): array` — one such row; 404 when unknown
-  - `task_stop_details(array $task): array` — adds `zones [{id, name}]`, `expected [{zone_id, zone_name, item_type_id, type_name, quantity}]`, `in_building [{id, sku, epc, zone_id, type}]`
+  - A task in an answer is `id, type, status, due_date, completed_at, contract_id, building_id, previous_task_id, assigned_to, assigned_name, signed_name, issue_note, has_proof, building_name, street, postcode, city, area_name, customer_id, customer_name, contact_name, contact_phone`
+  - For a driver each task also has `zones [{id, name}]`, `expected [{zone_id, zone_name, item_type_id, type_name, quantity}]`, `in_building [{id, sku, epc, zone_id, type}]`
+  - `TaskController::view(int $id): array` (private) — one task; 404 when unknown
   - Routes:
     - `GET /tasks` — office: `{"tasks": [...]}` with filters `status`, `type`, `assigned_to`; driver: `{"tasks": [...]}` of his own open tasks with the stop details; inventory and outbound: `{"drivers": [{driver {id, name}, needs [{item_type_id, type, needed, carried, remaining}]}]}`
     - `POST /tasks` (office) — `{contract_id, building_id, due_date}` creates a `collection` task → `{"task": {...}}`
@@ -3888,7 +3943,7 @@ git commit -m "Add contracts with activation and ending at 0.4.8."
 
 - [ ] **Step 1: Add the test helper**
 
-Add this method at the end of the class in `tests/ApiTestCase.php`:
+Add this method at the end of the class in `site/tests/ApiTestCase.php`:
 
 ```php
     /** Activates a seeded contract as the office and, if a driver is named, assigns its tasks to him. Returns the task ids. */
@@ -3907,12 +3962,17 @@ Add this method at the end of the class in `tests/ApiTestCase.php`:
 
 - [ ] **Step 2: Write the failing test**
 
-Create `tests/TasksTest.php`:
+Create `site/tests/Feature/TasksTest.php`:
 
 ```php
 <?php
 /** Task lists per role, assigning a driver, how many mats each driver still needs, and collection tasks. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Tests\ApiTestCase;
 
 final class TasksTest extends ApiTestCase
 {
@@ -3941,7 +4001,7 @@ final class TasksTest extends ApiTestCase
         $this->assertSame($this->users['driver'], $this->ok($assign($this->users['driver']))['task']['assigned_to']);
         $this->assertNull($this->ok($assign(null))['task']['assigned_to']);
         $this->assertError(422, 'invalid_reference', $assign($this->users['washing']));
-        q('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver2']]);
+        DB::statement('UPDATE users SET is_active = 0 WHERE id = ?', [$this->users['driver2']]);
         $this->assertError(422, 'invalid_reference', $assign($this->users['driver2']));
     }
 
@@ -4039,202 +4099,219 @@ final class TasksTest extends ApiTestCase
 
 - [ ] **Step 3: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/TasksTest.php`
+Run: `(cd site && php artisan test tests/Feature/TasksTest.php)`
 Expected: FAIL: the helper's `PATCH /tasks/{id}` and every `GET /tasks` get `404 not_found`.
 
 - [ ] **Step 4: Write the implementation**
 
-Create `site/app/tasks.php`:
+Create `site/app/Http/Controllers/TaskController.php`:
 
 ```php
 <?php
 /** Tasks: one visit to one building. Lists per role, assignment, closing a stop with proof, and the next swap. */
 declare(strict_types=1);
 
-const TASK_SELECT = 'SELECT t.id, t.type, t.status, t.due_date, t.completed_at, t.contract_id, t.building_id, t.previous_task_id,
-        t.assigned_to, u.name AS assigned_name, t.signed_name, t.issue_note, t.photo_path IS NOT NULL AS has_proof,
-        b.name AS building_name, b.street, b.postcode, b.city, a.name AS area_name,
-        c.id AS customer_id, c.name AS customer_name, c.contact_name, c.contact_phone
-    FROM tasks t
-    JOIN buildings b ON b.id = t.building_id
-    JOIN areas a ON a.id = b.area_id
-    JOIN customers c ON c.id = b.customer_id
-    LEFT JOIN users u ON u.id = t.assigned_to';
+namespace App\Http\Controllers;
 
-function task_view(int $id): array
-{
-    $task = q(TASK_SELECT . ' WHERE t.id = ?', [$id])->fetch();
-    if (!$task) {
-        fail(404, 'not_found', 'No such task.');
-    }
-    return $task;
-}
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
-/** What the driver needs at the stop: the zones, the mats the contract expects, and the mats lying there now. */
-function task_stop_details(array $task): array
+final class TaskController extends Controller
 {
-    $task['zones'] = q('SELECT id, name FROM zones WHERE building_id = ? AND is_active = 1 ORDER BY name',
-        [$task['building_id']])->fetchAll();
-    $task['expected'] = q('SELECT l.zone_id, z.name AS zone_name, l.item_type_id, it.name AS type_name, l.quantity
-        FROM contract_lines l JOIN zones z ON z.id = l.zone_id JOIN item_types it ON it.id = l.item_type_id
-        WHERE l.contract_id = ? AND z.building_id = ? ORDER BY z.name, it.name',
-        [$task['contract_id'], $task['building_id']])->fetchAll();
-    $task['in_building'] = q("SELECT i.id, i.sku, i.epc, i.zone_id, it.name AS type
-        FROM items i JOIN item_types it ON it.id = i.item_type_id JOIN zones z ON z.id = i.zone_id
-        WHERE i.status = 'at_customer' AND z.building_id = ? ORDER BY i.sku", [$task['building_id']])->fetchAll();
-    return $task;
-}
-
-/** Per driver and mat type: mats his open delivery and swap tasks need, mats already on his van, and the difference. */
-function task_needs(): array
-{
-    $needed = q("SELECT t.assigned_to AS driver_id, u.name AS driver_name, l.item_type_id, it.name AS type_name,
-            SUM(l.quantity) AS needed
+    private const SELECT = 'SELECT t.id, t.type, t.status, t.due_date, t.completed_at, t.contract_id, t.building_id, t.previous_task_id,
+            t.assigned_to, u.name AS assigned_name, t.signed_name, t.issue_note, t.photo_path IS NOT NULL AS has_proof,
+            b.name AS building_name, b.street, b.postcode, b.city, a.name AS area_name,
+            c.id AS customer_id, c.name AS customer_name, c.contact_name, c.contact_phone
         FROM tasks t
-        JOIN users u ON u.id = t.assigned_to
-        JOIN contract_lines l ON l.contract_id = t.contract_id
-        JOIN zones z ON z.id = l.zone_id AND z.building_id = t.building_id
-        JOIN item_types it ON it.id = l.item_type_id
-        WHERE t.status = 'open' AND t.type IN ('delivery', 'swap')
-        GROUP BY t.assigned_to, u.name, l.item_type_id, it.name
-        ORDER BY u.name, it.name")->fetchAll();
+        JOIN buildings b ON b.id = t.building_id
+        JOIN areas a ON a.id = b.area_id
+        JOIN customers c ON c.id = b.customer_id
+        LEFT JOIN users u ON u.id = t.assigned_to';
 
-    $carried = [];
-    $onVans = q("SELECT holder_user_id, item_type_id, COUNT(*) AS n FROM items
-        WHERE status = 'out_for_delivery' GROUP BY holder_user_id, item_type_id")->fetchAll();
-    foreach ($onVans as $row) {
-        $carried["{$row['holder_user_id']}:{$row['item_type_id']}"] = (int) $row['n'];
-    }
-
-    $drivers = [];
-    foreach ($needed as $row) {
-        $have = $carried["{$row['driver_id']}:{$row['item_type_id']}"] ?? 0;
-        $drivers[$row['driver_id']] ??= ['driver' => ['id' => $row['driver_id'], 'name' => $row['driver_name']], 'needs' => []];
-        $drivers[$row['driver_id']]['needs'][] = [
-            'item_type_id' => $row['item_type_id'],
-            'type' => $row['type_name'],
-            'needed' => (int) $row['needed'],   // SUM() comes back as a decimal string
-            'carried' => $have,
-            'remaining' => max(0, (int) $row['needed'] - $have),
-        ];
-    }
-    return array_values($drivers);
-}
-
-function tasks_list(Request $req, array $user): array
-{
-    if ($user['role'] === 'inventory' || $user['role'] === 'outbound') {
-        return ['drivers' => task_needs()];
-    }
-    if ($user['role'] === 'driver') {
-        $rows = q(TASK_SELECT . " WHERE t.assigned_to = ? AND t.status = 'open' ORDER BY t.due_date, t.id", [$user['id']])->fetchAll();
-        return ['tasks' => array_map('task_stop_details', $rows)];
-    }
-
-    $where = ['1 = 1'];
-    $params = [];
-    $filter = $req->query;
-    if (($filter['status'] ?? '') !== '') {
-        $where[] = 't.status = ?';
-        $params[] = enum_in($filter, 'status', ['open', 'done', 'cancelled']);
-    }
-    if (($filter['type'] ?? '') !== '') {
-        $where[] = 't.type = ?';
-        $params[] = enum_in($filter, 'type', ['delivery', 'swap', 'collection']);
-    }
-    if (($filter['assigned_to'] ?? '') !== '') {
-        $where[] = 't.assigned_to = ?';
-        $params[] = int_in($filter, 'assigned_to');
-    }
-    // ponytail: open work first, 200 rows, no paging. Add paging when the office has more than fits one screen.
-    return ['tasks' => q(TASK_SELECT . ' WHERE ' . implode(' AND ', $where)
-        . " ORDER BY t.status = 'open' DESC, t.due_date, t.id LIMIT 200", $params)->fetchAll()];
-}
-
-/** The office creates a collection task: pick-up only, when a contract ends. */
-function tasks_create(Request $req, array $user): array
-{
-    $in = $req->body;
-    $contractId = int_in($in, 'contract_id');
-    $buildingId = int_in($in, 'building_id');
-    $due = date_in($in, 'due_date');
-
-    $contract = q('SELECT status FROM contracts WHERE id = ?', [$contractId])->fetch();
-    if (!$contract) {
-        fail(404, 'not_found', 'No such contract.');
-    }
-    if ($contract['status'] === 'draft') {
-        fail(409, 'not_started', 'A draft contract has no mats to collect.');
-    }
-    $inContract = q('SELECT 1 FROM contract_lines l JOIN zones z ON z.id = l.zone_id WHERE l.contract_id = ? AND z.building_id = ? LIMIT 1',
-        [$contractId, $buildingId])->fetch();
-    if (!$inContract) {
-        fail(422, 'invalid_reference', 'This building is not part of that contract.');
-    }
-    q("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('collection', ?, ?, ?)", [$contractId, $buildingId, $due]);
-    return ['task' => task_view((int) db()->lastInsertId())];
-}
-
-function tasks_update(Request $req, array $user, int $id): array
-{
-    $in = $req->body;
-    return tx(function () use ($in, $id): array {
-        $task = q('SELECT status FROM tasks WHERE id = ? FOR UPDATE', [$id])->fetch();
-        if (!$task) {
+    /** One task. 404 when unknown. */
+    private static function view(int $id): array
+    {
+        $task = row(self::SELECT . ' WHERE t.id = ?', [$id]);
+        if ($task === null) {
             fail(404, 'not_found', 'No such task.');
         }
-        if ($task['status'] !== 'open') {
-            fail(409, 'not_open', "This task is already {$task['status']}.");
+        return $task;
+    }
+
+    /** What the driver needs at the stop: the zones, the mats the contract expects, and the mats lying there now. */
+    private static function stopDetails(array $task): array
+    {
+        $task['zones'] = rows('SELECT id, name FROM zones WHERE building_id = ? AND is_active = 1 ORDER BY name',
+            [$task['building_id']]);
+        $task['expected'] = rows('SELECT l.zone_id, z.name AS zone_name, l.item_type_id, it.name AS type_name, l.quantity
+            FROM contract_lines l JOIN zones z ON z.id = l.zone_id JOIN item_types it ON it.id = l.item_type_id
+            WHERE l.contract_id = ? AND z.building_id = ? ORDER BY z.name, it.name',
+            [$task['contract_id'], $task['building_id']]);
+        $task['in_building'] = rows("SELECT i.id, i.sku, i.epc, i.zone_id, it.name AS type
+            FROM items i JOIN item_types it ON it.id = i.item_type_id JOIN zones z ON z.id = i.zone_id
+            WHERE i.status = 'at_customer' AND z.building_id = ? ORDER BY i.sku", [$task['building_id']]);
+        return $task;
+    }
+
+    /** Per driver and mat type: mats his open delivery and swap tasks need, mats already on his van, and the difference. */
+    private static function needs(): array
+    {
+        $needed = rows("SELECT t.assigned_to AS driver_id, u.name AS driver_name, l.item_type_id, it.name AS type_name,
+                SUM(l.quantity) AS needed
+            FROM tasks t
+            JOIN users u ON u.id = t.assigned_to
+            JOIN contract_lines l ON l.contract_id = t.contract_id
+            JOIN zones z ON z.id = l.zone_id AND z.building_id = t.building_id
+            JOIN item_types it ON it.id = l.item_type_id
+            WHERE t.status = 'open' AND t.type IN ('delivery', 'swap')
+            GROUP BY t.assigned_to, u.name, l.item_type_id, it.name
+            ORDER BY u.name, it.name");
+
+        $carried = [];
+        $onVans = rows("SELECT holder_user_id, item_type_id, COUNT(*) AS n FROM items
+            WHERE status = 'out_for_delivery' GROUP BY holder_user_id, item_type_id");
+        foreach ($onVans as $van) {
+            $carried["{$van['holder_user_id']}:{$van['item_type_id']}"] = (int) $van['n'];
         }
-        if (array_key_exists('assigned_to', $in)) {
-            $driverId = int_in($in, 'assigned_to', false);
-            if ($driverId !== null && !q("SELECT 1 FROM users WHERE id = ? AND role = 'driver' AND is_active = 1", [$driverId])->fetch()) {
-                fail(422, 'invalid_reference', 'A task can only be assigned to an active driver.');
+
+        $drivers = [];
+        foreach ($needed as $need) {
+            $have = $carried["{$need['driver_id']}:{$need['item_type_id']}"] ?? 0;
+            $drivers[$need['driver_id']] ??= ['driver' => ['id' => $need['driver_id'], 'name' => $need['driver_name']], 'needs' => []];
+            $drivers[$need['driver_id']]['needs'][] = [
+                'item_type_id' => $need['item_type_id'],
+                'type' => $need['type_name'],
+                'needed' => (int) $need['needed'],   // SUM() comes back as a decimal string
+                'carried' => $have,
+                'remaining' => max(0, (int) $need['needed'] - $have),
+            ];
+        }
+        return array_values($drivers);
+    }
+
+    public function index(Request $request): array
+    {
+        $user = $request->user();
+        if ($user->role === 'inventory' || $user->role === 'outbound') {
+            return ['drivers' => self::needs()];
+        }
+        if ($user->role === 'driver') {
+            $tasks = rows(self::SELECT . " WHERE t.assigned_to = ? AND t.status = 'open' ORDER BY t.due_date, t.id", [$user->id]);
+            return ['tasks' => array_map(self::stopDetails(...), $tasks)];
+        }
+
+        $filter = $request->validate([
+            'status' => 'nullable|in:open,done,cancelled',
+            'type' => 'nullable|in:delivery,swap,collection',
+            'assigned_to' => 'nullable|integer|min:0',
+        ]);
+        $where = ['1 = 1'];
+        $params = [];
+        if (isset($filter['status'])) {
+            $where[] = 't.status = ?';
+            $params[] = $filter['status'];
+        }
+        if (isset($filter['type'])) {
+            $where[] = 't.type = ?';
+            $params[] = $filter['type'];
+        }
+        if (isset($filter['assigned_to'])) {
+            $where[] = 't.assigned_to = ?';
+            $params[] = (int) $filter['assigned_to'];
+        }
+        // ponytail: open work first, 200 rows, no paging. Add paging when the office has more than fits one screen.
+        return ['tasks' => rows(self::SELECT . ' WHERE ' . implode(' AND ', $where)
+            . " ORDER BY t.status = 'open' DESC, t.due_date, t.id LIMIT 200", $params)];
+    }
+
+    /** The office creates a collection task: pick-up only, when a contract ends. */
+    public function store(Request $request): array
+    {
+        $in = $request->validate([
+            'contract_id' => 'required|integer|min:0',
+            'building_id' => 'required|integer|min:0',
+            'due_date' => 'required|date_format:Y-m-d',
+        ]);
+        $contractId = (int) $in['contract_id'];
+        $buildingId = (int) $in['building_id'];
+
+        $contract = row('SELECT status FROM contracts WHERE id = ?', [$contractId]);
+        if ($contract === null) {
+            fail(404, 'not_found', 'No such contract.');
+        }
+        if ($contract['status'] === 'draft') {
+            fail(409, 'not_started', 'A draft contract has no mats to collect.');
+        }
+        $inContract = DB::scalar('SELECT 1 FROM contract_lines l JOIN zones z ON z.id = l.zone_id WHERE l.contract_id = ? AND z.building_id = ? LIMIT 1',
+            [$contractId, $buildingId]);
+        if ($inContract === null) {
+            fail(422, 'invalid_reference', 'This building is not part of that contract.');
+        }
+        DB::insert("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('collection', ?, ?, ?)",
+            [$contractId, $buildingId, $in['due_date']]);
+        return ['task' => self::view((int) DB::getPdo()->lastInsertId())];
+    }
+
+    /** The office assigns a driver, moves the due date or cancels. Only while the task is open. */
+    public function update(Request $request, int $id): array
+    {
+        $in = $request->validate([
+            'assigned_to' => 'nullable|integer|min:0',
+            'due_date' => 'sometimes|required|date_format:Y-m-d',
+            'status' => 'sometimes|required|in:cancelled',
+        ]);
+        $assign = $request->has('assigned_to');   // null counts: it takes the task away from the driver
+        $driverId = isset($in['assigned_to']) ? (int) $in['assigned_to'] : null;
+        return DB::transaction(function () use ($in, $assign, $driverId, $id): array {
+            $task = row('SELECT status FROM tasks WHERE id = ? FOR UPDATE', [$id]);
+            if ($task === null) {
+                fail(404, 'not_found', 'No such task.');
             }
-            q('UPDATE tasks SET assigned_to = ? WHERE id = ?', [$driverId, $id]);
-        }
-        if (array_key_exists('due_date', $in)) {
-            q('UPDATE tasks SET due_date = ? WHERE id = ?', [date_in($in, 'due_date'), $id]);
-        }
-        if (array_key_exists('status', $in)) {
-            enum_in($in, 'status', ['cancelled']);
-            q("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'open'", [$id]);
-        }
-        return ['task' => task_view($id)];
-    });
+            if ($task['status'] !== 'open') {
+                fail(409, 'not_open', "This task is already {$task['status']}.");
+            }
+            if ($assign) {
+                $isDriver = DB::scalar("SELECT 1 FROM users WHERE id = ? AND role = 'driver' AND is_active = 1", [$driverId]);
+                if ($driverId !== null && $isDriver === null) {
+                    fail(422, 'invalid_reference', 'A task can only be assigned to an active driver.');
+                }
+                DB::update('UPDATE tasks SET assigned_to = ? WHERE id = ?', [$driverId, $id]);
+            }
+            if (isset($in['due_date'])) {
+                DB::update('UPDATE tasks SET due_date = ? WHERE id = ?', [$in['due_date'], $id]);
+            }
+            if (isset($in['status'])) {
+                DB::update("UPDATE tasks SET status = 'cancelled' WHERE id = ? AND status = 'open'", [$id]);
+            }
+            return ['task' => self::view($id)];
+        });
+    }
 }
 ```
 
-In `site/app/bootstrap.php` replace the file list:
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
 
 ```php
-foreach (['db', 'http', 'kernel', 'auth', 'refdata', 'users', 'scan', 'items', 'handovers', 'contracts', 'tasks'] as $file) {
-    require __DIR__ . "/$file.php";
-}
-```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
-
-```php
-    ['GET',   '/tasks',      [$O, $D, $I, $X], 'tasks_list'],
-    ['POST',  '/tasks',      [$O],             'tasks_create'],
-    ['PATCH', '/tasks/{id}', [$O],             'tasks_update'],
+    Route::get('/tasks', [C\TaskController::class, 'index'])->middleware('role:office,driver,inventory,outbound');
+    Route::post('/tasks', [C\TaskController::class, 'store'])->middleware('role:office');
+    Route::patch('/tasks/{id}', [C\TaskController::class, 'update'])->middleware('role:office');
 ```
 
 - [ ] **Step 5: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/TasksTest.php`
-Expected: `OK (8 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/TasksTest.php)`
+Expected: `Tests:    8 passed`.
 
 - [ ] **Step 6: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (101 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    100 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.9-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.9"/' composer.json
-git add site/app/tasks.php site/app/bootstrap.php site/app/routes.php tests/ApiTestCase.php tests/TasksTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.9"/' site/composer.json
+git add site README.md
 git commit -m "Add task lists per role, assignment and collection tasks at 0.4.9."
 ```
 
@@ -4243,37 +4320,32 @@ git commit -m "Add task lists per role, assignment and collection tasks at 0.4.9
 ### Task 11: Closing a stop with proof, and the next swap
 
 **Files:**
-- Modify: `site/app/tasks.php` (add functions at the end), `site/app/routes.php`, `tests/ApiTestCase.php` (two helpers)
-- Test: `tests/TaskCompleteTest.php`
+- Modify: `site/app/Http/Controllers/TaskController.php` (imports, and members at the end of the class), `site/routes/api.php`, `site/tests/ApiTestCase.php` (two helpers)
+- Test: `site/tests/Feature/TaskCompleteTest.php`
 
 **Interfaces:**
-- Consumes: `source_in()`, `hex_in()`, `items_by_epc()`, `log_event()`, `task_view()`, `storage_dir()`, `today()`, `days_after()`, `q()`, `tx()`, `str_in()`, `int_in()`, `FileOut`, and the test helper `activateContract()` from Task 10.
+- Consumes: `Scan::source()`, `Scan::hex()`, `Scan::itemsByEpc()`, `Scan::log()`, `TaskController::view()`, `today()`, `days_after()`, `rows()`, `row()`, `DB::transaction()`, Laravel's `Storage` disk `local` (the folder `site/storage/app/private`, outside the web root), and the test helper `activateContract()` from Task 10.
 - Produces:
-  - `POST /tasks/{id}/complete` (driver) — body `{source, drops: [{zone_id, epcs: [...]}], pickups: [...], refused: [...], signed_name, issue_note}` plus the files `photo` (JPEG, at most 5 MB) and `signature` (PNG, at most 1 MB) → `{"task": {...}, "next_task_id": int|null}`
+  - `POST /tasks/{id}/complete` (driver) — a form (`multipart/form-data`): the field `payload` holds the JSON `{source, drops: [{zone_id, epcs: [...]}], pickups: [...], refused: [...], signed_name, issue_note}`, plus the files `photo` (JPEG, at most 5 MB) and `signature` (PNG, at most 1 MB) → `{"task": {...}, "next_task_id": int|null}`
   - `GET /tasks/{id}/photo` and `GET /tasks/{id}/signature` (office) → the file
-  - Test helpers `proofFile(string $kind, int $padBytes = 0): string` and `epcs(int ...$mats): array`
+  - Test helpers `proofFile(string $kind, int $padBytes = 0): UploadedFile` and `epcs(int ...$mats): array`
 
 Rules for closing a stop:
 
 1. **Refused whole** (nothing is saved): the task is not open (`409`) or not assigned to the caller (`403`); a tag no mat has (`422`); a dropped or refused mat that is not `out_for_delivery` on the caller's van (`409`); a drop zone outside the task's building (`422`); a picked-up mat that is not `at_customer` in this building (`409`); the same mat in two lists (`422`); a drop on a collection task (`422`); a missing or wrong photo or signature (`422`).
 2. **Needs a note** (`422 note_required` without one): the drops do not match the contract lines of this building exactly (per zone and mat type), or the pick-ups are not exactly the mats lying in this building. A delivery expects no pick-ups; a collection expects no drops.
-3. **On success:** dropped mats become `at_customer` in their zone, refused mats become `refused` and stay with the driver, picked-up mats become `collected` with the driver. The two files are stored under `storage/proofs` with a server-made name. The task becomes `done`. For a delivery or swap of an active contract the next swap task is created, due on today + n, not assigned.
+3. **On success:** dropped mats become `at_customer` in their zone, refused mats become `refused` and stay with the driver, picked-up mats become `collected` with the driver. The two files are stored in the folder `proofs` of the `local` disk with a server-made name. The task becomes `done`. For a delivery or swap of an active contract the next swap task is created, due on today + n, not assigned.
 
 - [ ] **Step 1: Add the test helpers**
 
-Add these two methods at the end of the class in `tests/ApiTestCase.php`:
+Add these two methods at the end of the class in `site/tests/ApiTestCase.php`:
 
 ```php
-    /** A real 8x8 image file of the given kind ("jpeg" or "png"), optionally padded to make it big. Returns its path. */
-    protected function proofFile(string $kind, int $padBytes = 0): string
+    /** A real 8x8 image of the given kind ("jpeg" or "png") as an upload. $padBytes makes it report a bigger size. */
+    protected function proofFile(string $kind, int $padBytes = 0): \Illuminate\Http\UploadedFile
     {
-        $path = tempnam(sys_get_temp_dir(), 'proof');
-        $image = imagecreatetruecolor(8, 8);
-        $kind === 'jpeg' ? imagejpeg($image, $path) : imagepng($image, $path);
-        if ($padBytes > 0) {
-            file_put_contents($path, str_repeat("\0", $padBytes), FILE_APPEND);
-        }
-        return $path;
+        $file = \Illuminate\Http\UploadedFile::fake()->image($kind === 'jpeg' ? 'proof.jpg' : 'proof.png', 8, 8);
+        return $padBytes > 0 ? $file->size(intdiv($padBytes, 1024) + 1) : $file;
     }
 
     /** The EPCs of mock mats n, n, n. */
@@ -4285,12 +4357,19 @@ Add these two methods at the end of the class in `tests/ApiTestCase.php`:
 
 - [ ] **Step 2: Write the failing test**
 
-Create `tests/TaskCompleteTest.php`:
+Create `site/tests/Feature/TaskCompleteTest.php`:
 
 ```php
 <?php
 /** Closing a stop: scan, photo and signature; hard refusals; the note for a mismatch; the next swap task; the proof files. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
+use Tests\ApiTestCase;
 
 final class TaskCompleteTest extends ApiTestCase
 {
@@ -4335,12 +4414,12 @@ final class TaskCompleteTest extends ApiTestCase
 
     private function taskRow(int $id): array
     {
-        return q('SELECT * FROM tasks WHERE id = ?', [$id])->fetch();
+        return row('SELECT * FROM tasks WHERE id = ?', [$id]);
     }
 
     private function storedProofs(): array
     {
-        return glob(storage_dir() . '/proofs/*') ?: [];
+        return Storage::disk('local')->files('proofs');
     }
 
     public function test_closing_a_delivery_puts_the_mats_in_their_zones_and_plans_the_swap(): void
@@ -4356,8 +4435,8 @@ final class TaskCompleteTest extends ApiTestCase
         $this->assertNotNull($row['completed_at']);
         $this->assertMatchesRegularExpression('/^task-' . $task . '-[0-9a-f]{16}\.jpg$/', $row['photo_path']);
         $this->assertMatchesRegularExpression('/^task-' . $task . '-[0-9a-f]{16}\.png$/', $row['signature_path']);
-        $this->assertFileExists(storage_dir() . '/proofs/' . $row['photo_path']);
-        $this->assertFileExists(storage_dir() . '/proofs/' . $row['signature_path']);
+        Storage::disk('local')->assertExists('proofs/' . $row['photo_path']);
+        Storage::disk('local')->assertExists('proofs/' . $row['signature_path']);
 
         $next = $this->taskRow($out['next_task_id']);
         $this->assertSame(['swap', 'open', 1, 1, $task, days_after(today(), 14), null],
@@ -4374,8 +4453,7 @@ final class TaskCompleteTest extends ApiTestCase
         $stop = $this->stop(['drops' => $this->fullDrop(1, 2, 3)]);
         $jpeg = $this->proofFile('jpeg');
         $png = $this->proofFile('png');
-        $text = tempnam(sys_get_temp_dir(), 'proof');
-        file_put_contents($text, 'this is not an image');
+        $text = UploadedFile::fake()->createWithContent('proof.jpg', 'this is not an image');
 
         $this->assertError(422, 'proof_required', $this->complete($task, $stop, ['signature' => $png]));
         $this->assertError(422, 'proof_required', $this->complete($task, $stop, ['photo' => $jpeg]));
@@ -4402,7 +4480,7 @@ final class TaskCompleteTest extends ApiTestCase
         $phonePhoto = $this->proofFile('jpeg', 3 * 1024 * 1024);   // above PHP's 2 MB default
         $this->ok($this->complete($task, $stop, ['photo' => $phonePhoto, 'signature' => $png]));
         // PHP itself must let such a photo through, before this code ever sees it.
-        $ini = parse_ini_file(__DIR__ . '/../site/www/.user.ini');
+        $ini = parse_ini_file(public_path('.user.ini'));
         $this->assertSame(['6M', '8M'], [$ini['upload_max_filesize'], $ini['post_max_size']]);
     }
 
@@ -4420,7 +4498,7 @@ final class TaskCompleteTest extends ApiTestCase
 
         $this->ok($this->complete($task, $stop));
         $this->assertError(409, 'not_open', $this->complete($task, $stop));   // sent twice
-        $this->assertSame(1, (int) q("SELECT COUNT(*) FROM tasks WHERE type = 'swap'")->fetchColumn());
+        $this->assertSame(1, (int) DB::scalar("SELECT COUNT(*) FROM tasks WHERE type = 'swap'"));
         $this->assertCount(2, $this->storedProofs());
     }
 
@@ -4474,7 +4552,7 @@ final class TaskCompleteTest extends ApiTestCase
         $this->assertSame(['out_for_delivery', 'out_for_delivery', 'out_for_delivery'],
             [$this->item(1)['status'], $this->item(2)['status'], $this->item(3)['status']]);
         $this->assertSame('open', $this->taskRow($task)['status']);
-        $this->assertSame(0, (int) q('SELECT COUNT(*) FROM item_events')->fetchColumn());
+        $this->assertSame(0, (int) DB::scalar('SELECT COUNT(*) FROM item_events'));
         $this->assertSame([], $this->storedProofs());
     }
 
@@ -4528,7 +4606,7 @@ final class TaskCompleteTest extends ApiTestCase
         $out = $this->ok($this->complete($collection, $this->stop(['pickups' => $this->epcs(1, 2, 3)])));
         $this->assertNull($out['next_task_id']);
         $this->assertSame('collected', $this->item(2)['status']);
-        $this->assertSame(0, (int) q("SELECT COUNT(*) FROM tasks WHERE status = 'open'")->fetchColumn());
+        $this->assertSame(0, (int) DB::scalar("SELECT COUNT(*) FROM tasks WHERE status = 'open'"));
     }
 
     public function test_a_delivery_for_an_ended_contract_plans_no_swap(): void
@@ -4540,7 +4618,7 @@ final class TaskCompleteTest extends ApiTestCase
         $this->loginAs('driver');
         $out = $this->ok($this->complete($task, $this->stop(['drops' => $this->fullDrop(1, 2, 3)])));
         $this->assertNull($out['next_task_id']);
-        $this->assertSame(0, (int) q("SELECT COUNT(*) FROM tasks WHERE type = 'swap'")->fetchColumn());
+        $this->assertSame(0, (int) DB::scalar("SELECT COUNT(*) FROM tasks WHERE type = 'swap'"));
     }
 
     public function test_proof_files_are_served_to_the_office_only(): void
@@ -4552,12 +4630,10 @@ final class TaskCompleteTest extends ApiTestCase
         $this->loginAs('office');
         [$status, $photo] = $this->api('GET', "/tasks/$task/photo");
         $this->assertSame(200, $status);
-        $this->assertInstanceOf(FileOut::class, $photo);
-        $this->assertSame('image/jpeg', $photo->mime);
-        $this->assertFileExists($photo->path);
-        $this->assertSame('image/png', $this->api('GET', "/tasks/$task/signature")[1]->mime);
+        $this->assertSame('image/jpeg', $photo->headers->get('Content-Type'));
+        $this->assertSame('image/png', $this->api('GET', "/tasks/$task/signature")[1]->headers->get('Content-Type'));
 
-        $open = q("SELECT id FROM tasks WHERE status = 'open'")->fetchColumn();   // the planned swap has no proof yet
+        $open = DB::scalar("SELECT id FROM tasks WHERE status = 'open'");   // the planned swap has no proof yet
         $this->assertError(404, 'no_proof', $this->api('GET', "/tasks/$open/photo"));
         $this->assertError(404, 'not_found', $this->api('GET', '/tasks/999/photo'));
     }
@@ -4566,248 +4642,283 @@ final class TaskCompleteTest extends ApiTestCase
 
 - [ ] **Step 3: Run the test to see it fail**
 
-Run: `php vendor/bin/phpunit tests/TaskCompleteTest.php`
+Run: `(cd site && php artisan test tests/Feature/TaskCompleteTest.php)`
 Expected: FAIL, every `complete` call gets `404 not_found`.
 
 - [ ] **Step 4: Write the implementation**
 
-Add at the end of `site/app/tasks.php`:
+Add these lines to the imports at the top of `site/app/Http/Controllers/TaskController.php`, so the list reads:
 
 ```php
-const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
-const MAX_SIGNATURE_BYTES = 1024 * 1024;
-
-/** A list of tag ids from the body of a stop, uppercase, each one once. */
-function epcs_in(array $in, string $key): array
-{
-    $list = $in[$key] ?? [];
-    if (!is_array($list) || !array_is_list($list)) {
-        fail(422, 'invalid_input', "$key must be a list of tag ids.");
-    }
-    return array_values(array_unique(array_map(fn ($epc) => hex_in(['epc' => $epc], 'epc'), $list)));
-}
-
-/** The drops of a stop as zone id => tag ids. */
-function drops_in(array $in): array
-{
-    $drops = $in['drops'] ?? [];
-    if (!is_array($drops) || !array_is_list($drops)) {
-        fail(422, 'invalid_input', 'drops must be a list.');
-    }
-    $byZone = [];
-    foreach ($drops as $drop) {
-        if (!is_array($drop)) {
-            fail(422, 'invalid_input', 'Every drop needs zone_id and epcs.');
-        }
-        $zoneId = int_in($drop, 'zone_id');
-        $byZone[$zoneId] = array_values(array_unique([...($byZone[$zoneId] ?? []), ...epcs_in($drop, 'epcs')]));
-    }
-    return $byZone;
-}
-
-/** An uploaded proof file, checked by its content and not by its name. Returns the path of the temp file. */
-function proof_in(Request $req, string $field, string $mime, int $maxBytes): string
-{
-    $path = $req->files[$field] ?? null;
-    if (!is_string($path) || !is_file($path)) {
-        fail(422, 'proof_required', "A $field is required to close a stop.");
-    }
-    if (filesize($path) > $maxBytes) {
-        fail(422, 'file_too_big', "The $field is larger than " . intdiv($maxBytes, 1024 * 1024) . ' MB.');
-    }
-    $image = @getimagesize($path);   // warns on a broken file; "false" is all this code needs
-    if ((new finfo(FILEINFO_MIME_TYPE))->file($path) !== $mime || !$image || $image['mime'] !== $mime) {
-        fail(422, 'wrong_file_type', "The $field must be a " . ($mime === 'image/jpeg' ? 'JPEG' : 'PNG') . ' image.');
-    }
-    return $path;
-}
-
-function tasks_complete(Request $req, array $user, int $id): array
-{
-    $in = $req->body;
-    $source = source_in($in);
-    $signedName = str_in($in, 'signed_name', 120);
-    $note = str_in($in, 'issue_note', 500, false);
-    $drops = drops_in($in);
-    $pickups = epcs_in($in, 'pickups');
-    $refused = epcs_in($in, 'refused');
-    $dropped = array_merge(...array_values($drops));
-    $all = [...$dropped, ...$pickups, ...$refused];
-    if (count($all) !== count(array_unique($all))) {
-        fail(422, 'duplicate_tag', 'A mat appears in more than one list of this stop.');
-    }
-    $photo = proof_in($req, 'photo', 'image/jpeg', MAX_PHOTO_BYTES);
-    $signature = proof_in($req, 'signature', 'image/png', MAX_SIGNATURE_BYTES);
-
-    $saved = [];
-    try {
-        return tx(function () use ($id, $user, $source, $signedName, $note, $drops, $dropped, $pickups, $refused, $all, $photo, $signature, &$saved): array {
-            $task = q('SELECT t.*, c.status AS contract_status, c.swap_interval_days
-                FROM tasks t JOIN contracts c ON c.id = t.contract_id WHERE t.id = ? FOR UPDATE', [$id])->fetch();
-            if (!$task) {
-                fail(404, 'not_found', 'No such task.');
-            }
-            if ($task['assigned_to'] !== $user['id']) {
-                fail(403, 'forbidden', 'This task is not assigned to you.');
-            }
-            if ($task['status'] !== 'open') {
-                fail(409, 'not_open', "This task is already {$task['status']}.");
-            }
-            if ($task['type'] === 'collection' && $dropped !== []) {
-                fail(422, 'no_drops', 'A collection task only picks mats up.');
-            }
-
-            $items = items_by_epc($all, true);
-            foreach ($all as $epc) {
-                if (!isset($items[$epc])) {
-                    fail(422, 'unknown_tag', "No mat has the tag $epc.");
-                }
-            }
-            $zoneIds = q('SELECT id FROM zones WHERE building_id = ?', [$task['building_id']])->fetchAll(PDO::FETCH_COLUMN);
-
-            // Hard rules: breaking one refuses the whole stop.
-            foreach (array_keys($drops) as $zoneId) {
-                if (!in_array($zoneId, $zoneIds, true)) {
-                    fail(422, 'wrong_zone', "Zone $zoneId is not in this building.");
-                }
-            }
-            foreach ([...$dropped, ...$refused] as $epc) {
-                $item = $items[$epc];
-                if ($item['status'] !== 'out_for_delivery' || $item['holder_user_id'] !== $user['id']) {
-                    fail(409, 'wrong_status', "{$item['sku']} is not on your van as out_for_delivery.");
-                }
-            }
-            foreach ($pickups as $epc) {
-                $item = $items[$epc];
-                if ($item['status'] !== 'at_customer' || !in_array($item['zone_id'], $zoneIds, true)) {
-                    fail(409, 'wrong_status', "{$item['sku']} is not at this building.");
-                }
-            }
-
-            // Soft rule: drops and pick-ups should match the contract. If they do not, the driver must say why.
-            $wanted = [];
-            if ($task['type'] !== 'collection') {
-                $lines = q('SELECT l.zone_id, l.item_type_id, l.quantity FROM contract_lines l JOIN zones z ON z.id = l.zone_id
-                    WHERE l.contract_id = ? AND z.building_id = ?', [$task['contract_id'], $task['building_id']])->fetchAll();
-                foreach ($lines as $line) {
-                    $wanted["{$line['zone_id']}:{$line['item_type_id']}"] = $line['quantity'];
-                }
-            }
-            $got = [];
-            foreach ($drops as $zoneId => $epcs) {
-                foreach ($epcs as $epc) {
-                    $key = "$zoneId:{$items[$epc]['item_type_id']}";
-                    $got[$key] = ($got[$key] ?? 0) + 1;
-                }
-            }
-            $present = $task['type'] === 'delivery' ? [] : q("SELECT i.epc FROM items i JOIN zones z ON z.id = i.zone_id
-                WHERE i.status = 'at_customer' AND z.building_id = ?", [$task['building_id']])->fetchAll(PDO::FETCH_COLUMN);
-            $picked = $pickups;
-            // Compare as text. As numbers PHP would call the tag ids "1E3" and "1000" equal.
-            sort($present, SORT_STRING);
-            sort($picked, SORT_STRING);
-            ksort($wanted);
-            ksort($got);
-            if (($got !== $wanted || $picked !== $present) && $note === null) {
-                fail(422, 'note_required', 'The mats do not match the contract. Add a note to close this stop.');
-            }
-
-            $move = function (array $item, string $to, ?int $holder, ?int $zone, string $event) use ($id, $user, $source): void {
-                $moved = q('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE id = ? AND status = ?',
-                    [$to, $holder, $zone, $item['id'], $item['status']])->rowCount();
-                if ($moved !== 1) {
-                    fail(409, 'wrong_status', "{$item['sku']} changed while the stop was being closed.");
-                }
-                // A drop is logged with the zone the mat went to, a pick-up with the zone it came from.
-                log_event($item, $user['id'], $event, $to, $source, ['task_id' => $id, 'zone_id' => $zone ?? $item['zone_id']]);
-            };
-            foreach ($drops as $zoneId => $epcs) {
-                foreach ($epcs as $epc) {
-                    $move($items[$epc], 'at_customer', null, $zoneId, 'deliver');
-                }
-            }
-            foreach ($refused as $epc) {
-                $move($items[$epc], 'refused', $user['id'], null, 'refuse');
-            }
-            foreach ($pickups as $epc) {
-                $move($items[$epc], 'collected', $user['id'], null, 'collect');
-            }
-
-            // Proof files get a server-made name and live outside the web root.
-            $dir = storage_dir() . '/proofs';
-            if (!is_dir($dir)) {
-                mkdir($dir, 0700, true);
-            }
-            $stem = "task-$id-" . bin2hex(random_bytes(8));
-            foreach ([[$photo, "$stem.jpg"], [$signature, "$stem.png"]] as [$from, $name]) {
-                if (!copy($from, "$dir/$name")) {
-                    fail(500, 'storage', 'The proof could not be stored.');
-                }
-                $saved[] = "$dir/$name";
-            }
-            q("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP(), photo_path = ?, signature_path = ?,
-                    signed_name = ?, issue_note = ? WHERE id = ? AND status = 'open'",
-                ["$stem.jpg", "$stem.png", $signedName, $note, $id]);
-
-            // Today is D. The next swap is due on D + n. The unique key on previous_task_id allows only one.
-            $nextId = null;
-            if ($task['type'] !== 'collection' && $task['contract_status'] === 'active') {
-                q("INSERT INTO tasks (type, contract_id, building_id, previous_task_id, due_date) VALUES ('swap', ?, ?, ?, ?)",
-                    [$task['contract_id'], $task['building_id'], $id, days_after(today(), $task['swap_interval_days'])]);
-                $nextId = (int) db()->lastInsertId();
-            }
-            return ['task' => task_view($id), 'next_task_id' => $nextId];
-        });
-    } catch (Throwable $e) {
-        // Nothing was saved in the database, so nothing may stay on disk.
-        foreach ($saved as $file) {
-            if (is_file($file)) {
-                unlink($file);
-            }
-        }
-        throw $e;
-    }
-}
-
-/** A proof file, for the office only. $kind is "photo" or "signature". */
-function tasks_proof(int $id, string $kind): FileOut
-{
-    $task = q('SELECT photo_path, signature_path FROM tasks WHERE id = ?', [$id])->fetch();
-    if (!$task) {
-        fail(404, 'not_found', 'No such task.');
-    }
-    $name = $task[$kind . '_path'];
-    // basename(): even a tampered path in the database cannot leave the proofs folder.
-    $path = $name === null ? null : storage_dir() . '/proofs/' . basename($name);
-    if ($path === null || !is_file($path)) {
-        fail(404, 'no_proof', 'This task has no proof file.');
-    }
-    return new FileOut($path, $kind === 'photo' ? 'image/jpeg' : 'image/png');
-}
+use App\Support\Scan;
+use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 ```
 
-In `site/app/routes.php` add these entries at the end of the returned array:
+Add these members at the end of the class in `site/app/Http/Controllers/TaskController.php`:
 
 ```php
-    ['POST', '/tasks/{id}/complete',  [$D], 'tasks_complete'],
-    ['GET',  '/tasks/{id}/photo',     [$O], fn ($r, $u, $id) => tasks_proof($id, 'photo')],
-    ['GET',  '/tasks/{id}/signature', [$O], fn ($r, $u, $id) => tasks_proof($id, 'signature')],
+    private const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+
+    private const MAX_SIGNATURE_BYTES = 1024 * 1024;
+
+    /** A list of tag ids from the body of a stop, uppercase, each one once. */
+    private static function epcs(array $in, string $key): array
+    {
+        $list = $in[$key] ?? [];
+        if (!is_array($list) || !array_is_list($list)) {
+            fail(422, 'invalid_input', "$key must be a list of tag ids.");
+        }
+        return array_values(array_unique(array_map(fn ($epc) => Scan::hex($epc, $key), $list)));
+    }
+
+    /** The drops of a stop as zone id => tag ids. */
+    private static function drops(array $in): array
+    {
+        $drops = $in['drops'] ?? [];
+        if (!is_array($drops) || !array_is_list($drops)) {
+            fail(422, 'invalid_input', 'drops must be a list.');
+        }
+        $byZone = [];
+        foreach ($drops as $drop) {
+            $zoneId = is_array($drop)
+                ? filter_var($drop['zone_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]])
+                : false;
+            if ($zoneId === false) {
+                fail(422, 'invalid_input', 'Every drop needs zone_id and epcs.');
+            }
+            $byZone[$zoneId] = array_values(array_unique([...($byZone[$zoneId] ?? []), ...self::epcs($drop, 'epcs')]));
+        }
+        return $byZone;
+    }
+
+    /** An uploaded proof file, checked by its content and not by its name. */
+    private static function proof(Request $request, string $field, string $mime, int $maxBytes): UploadedFile
+    {
+        $file = $request->file($field);
+        if (!$file instanceof UploadedFile) {
+            fail(422, 'proof_required', "A $field is required to close a stop.");
+        }
+        // A file above PHP's own upload limit arrives broken, with one of these two error codes.
+        $refusedByPhp = in_array($file->getError(), [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true);
+        if ($refusedByPhp || $file->getSize() > $maxBytes) {
+            fail(422, 'file_too_big', "The $field is larger than " . intdiv($maxBytes, 1024 * 1024) . ' MB.');
+        }
+        if (!$file->isValid()) {
+            fail(422, 'proof_required', "A $field is required to close a stop.");
+        }
+        $path = $file->getRealPath();
+        $image = @getimagesize($path);   // warns on a broken file; "false" is all this code needs
+        if ((new \finfo(FILEINFO_MIME_TYPE))->file($path) !== $mime || !$image || $image['mime'] !== $mime) {
+            fail(422, 'wrong_file_type', "The $field must be a " . ($mime === 'image/jpeg' ? 'JPEG' : 'PNG') . ' image.');
+        }
+        return $file;
+    }
+
+    /** The driver closes a stop: the mats he dropped, picked up and got refused, a photo and a signature. */
+    public function complete(Request $request, int $id): array
+    {
+        // Sent as a form: the two files, plus the stop itself as JSON in the field "payload".
+        $in = json_decode((string) $request->input('payload'), true);
+        if (!is_array($in)) {
+            fail(422, 'invalid_input', 'The field payload must hold the stop as JSON.');
+        }
+        $user = $request->user();
+        $source = Scan::source($in);
+        $text = Validator::make($in, [
+            'signed_name' => 'required|string|max:120',
+            'issue_note' => 'nullable|string|max:500',
+        ])->validate();
+        $signedName = trim($text['signed_name']);
+        $note = trim((string) ($text['issue_note'] ?? ''));
+        $note = $note === '' ? null : $note;   // a note of spaces is no note
+        $drops = self::drops($in);
+        $pickups = self::epcs($in, 'pickups');
+        $refused = self::epcs($in, 'refused');
+        $dropped = array_merge(...array_values($drops));
+        $all = [...$dropped, ...$pickups, ...$refused];
+        if (count($all) !== count(array_unique($all))) {
+            fail(422, 'duplicate_tag', 'A mat appears in more than one list of this stop.');
+        }
+        $photo = self::proof($request, 'photo', 'image/jpeg', self::MAX_PHOTO_BYTES);
+        $signature = self::proof($request, 'signature', 'image/png', self::MAX_SIGNATURE_BYTES);
+
+        $saved = [];
+        try {
+            return DB::transaction(function () use ($id, $user, $source, $signedName, $note, $drops, $dropped, $pickups, $refused, $all, $photo, $signature, &$saved): array {
+                $task = row('SELECT t.*, c.status AS contract_status, c.swap_interval_days
+                    FROM tasks t JOIN contracts c ON c.id = t.contract_id WHERE t.id = ? FOR UPDATE', [$id]);
+                if ($task === null) {
+                    fail(404, 'not_found', 'No such task.');
+                }
+                if ($task['assigned_to'] !== $user->id) {
+                    fail(403, 'forbidden', 'This task is not assigned to you.');
+                }
+                if ($task['status'] !== 'open') {
+                    fail(409, 'not_open', "This task is already {$task['status']}.");
+                }
+                if ($task['type'] === 'collection' && $dropped !== []) {
+                    fail(422, 'no_drops', 'A collection task only picks mats up.');
+                }
+
+                $items = Scan::itemsByEpc($all, true);
+                foreach ($all as $epc) {
+                    if (!isset($items[$epc])) {
+                        fail(422, 'unknown_tag', "No mat has the tag $epc.");
+                    }
+                }
+                $zoneIds = array_column(rows('SELECT id FROM zones WHERE building_id = ?', [$task['building_id']]), 'id');
+
+                // Hard rules: breaking one refuses the whole stop.
+                foreach (array_keys($drops) as $zoneId) {
+                    if (!in_array($zoneId, $zoneIds, true)) {
+                        fail(422, 'wrong_zone', "Zone $zoneId is not in this building.");
+                    }
+                }
+                foreach ([...$dropped, ...$refused] as $epc) {
+                    $item = $items[$epc];
+                    if ($item['status'] !== 'out_for_delivery' || $item['holder_user_id'] !== $user->id) {
+                        fail(409, 'wrong_status', "{$item['sku']} is not on your van as out_for_delivery.");
+                    }
+                }
+                foreach ($pickups as $epc) {
+                    $item = $items[$epc];
+                    if ($item['status'] !== 'at_customer' || !in_array($item['zone_id'], $zoneIds, true)) {
+                        fail(409, 'wrong_status', "{$item['sku']} is not at this building.");
+                    }
+                }
+
+                // Soft rule: drops and pick-ups should match the contract. If they do not, the driver must say why.
+                $wanted = [];
+                if ($task['type'] !== 'collection') {
+                    $lines = rows('SELECT l.zone_id, l.item_type_id, l.quantity FROM contract_lines l JOIN zones z ON z.id = l.zone_id
+                        WHERE l.contract_id = ? AND z.building_id = ?', [$task['contract_id'], $task['building_id']]);
+                    foreach ($lines as $line) {
+                        $wanted["{$line['zone_id']}:{$line['item_type_id']}"] = $line['quantity'];
+                    }
+                }
+                $got = [];
+                foreach ($drops as $zoneId => $epcs) {
+                    foreach ($epcs as $epc) {
+                        $key = "$zoneId:{$items[$epc]['item_type_id']}";
+                        $got[$key] = ($got[$key] ?? 0) + 1;
+                    }
+                }
+                $present = $task['type'] === 'delivery' ? [] : array_column(rows("SELECT i.epc FROM items i JOIN zones z ON z.id = i.zone_id
+                    WHERE i.status = 'at_customer' AND z.building_id = ?", [$task['building_id']]), 'epc');
+                $picked = $pickups;
+                // Compare as text. As numbers PHP would call the tag ids "1E3" and "1000" equal.
+                sort($present, SORT_STRING);
+                sort($picked, SORT_STRING);
+                ksort($wanted);
+                ksort($got);
+                if (($got !== $wanted || $picked !== $present) && $note === null) {
+                    fail(422, 'note_required', 'The mats do not match the contract. Add a note to close this stop.');
+                }
+
+                $move = function (array $item, string $to, ?int $holder, ?int $zone, string $event) use ($id, $user, $source): void {
+                    $moved = DB::update('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE id = ? AND status = ?',
+                        [$to, $holder, $zone, $item['id'], $item['status']]);
+                    if ($moved !== 1) {
+                        fail(409, 'wrong_status', "{$item['sku']} changed while the stop was being closed.");
+                    }
+                    // A drop is logged with the zone the mat went to, a pick-up with the zone it came from.
+                    Scan::log($item, $user->id, $event, $to, $source, ['task_id' => $id, 'zone_id' => $zone ?? $item['zone_id']]);
+                };
+                foreach ($drops as $zoneId => $epcs) {
+                    foreach ($epcs as $epc) {
+                        $move($items[$epc], 'at_customer', null, $zoneId, 'deliver');
+                    }
+                }
+                foreach ($refused as $epc) {
+                    $move($items[$epc], 'refused', $user->id, null, 'refuse');
+                }
+                foreach ($pickups as $epc) {
+                    $move($items[$epc], 'collected', $user->id, null, 'collect');
+                }
+
+                // Proof files get a server-made name and live on the "local" disk, outside the web root.
+                $stem = "task-$id-" . bin2hex(random_bytes(8));
+                foreach ([[$photo, "$stem.jpg"], [$signature, "$stem.png"]] as [$file, $name]) {
+                    if ($file->storeAs('proofs', $name, 'local') === false) {
+                        fail(500, 'storage', 'The proof could not be stored.');
+                    }
+                    $saved[] = "proofs/$name";
+                }
+                DB::update("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP(), photo_path = ?, signature_path = ?,
+                        signed_name = ?, issue_note = ? WHERE id = ? AND status = 'open'",
+                    ["$stem.jpg", "$stem.png", $signedName, $note, $id]);
+
+                // Today is D. The next swap is due on D + n. The unique key on previous_task_id allows only one.
+                $nextId = null;
+                if ($task['type'] !== 'collection' && $task['contract_status'] === 'active') {
+                    DB::insert("INSERT INTO tasks (type, contract_id, building_id, previous_task_id, due_date) VALUES ('swap', ?, ?, ?, ?)",
+                        [$task['contract_id'], $task['building_id'], $id, days_after(today(), $task['swap_interval_days'])]);
+                    $nextId = (int) DB::getPdo()->lastInsertId();
+                }
+                return ['task' => self::view($id), 'next_task_id' => $nextId];
+            });
+        } catch (\Throwable $e) {
+            // Nothing was saved in the database, so nothing may stay on disk.
+            Storage::disk('local')->delete($saved);
+            throw $e;
+        }
+    }
+
+    public function photo(int $id): StreamedResponse
+    {
+        return self::proofFile($id, 'photo');
+    }
+
+    public function signature(int $id): StreamedResponse
+    {
+        return self::proofFile($id, 'signature');
+    }
+
+    /** A proof file, for the office only. $kind is "photo" or "signature". */
+    private static function proofFile(int $id, string $kind): StreamedResponse
+    {
+        $task = row('SELECT photo_path, signature_path FROM tasks WHERE id = ?', [$id]);
+        if ($task === null) {
+            fail(404, 'not_found', 'No such task.');
+        }
+        $name = $task[$kind . '_path'];
+        // basename(): even a tampered path in the database cannot leave the proofs folder.
+        $path = $name === null ? null : 'proofs/' . basename($name);
+        if ($path === null || !Storage::disk('local')->exists($path)) {
+            fail(404, 'no_proof', 'This task has no proof file.');
+        }
+        return Storage::disk('local')->response($path, null, ['Content-Type' => $kind === 'photo' ? 'image/jpeg' : 'image/png']);
+    }
+```
+
+In `site/routes/api.php` add these lines at the end of the `auth:sanctum` group (directly above its closing `});`):
+
+```php
+
+    Route::post('/tasks/{id}/complete', [C\TaskController::class, 'complete'])->middleware('role:driver');
+    Route::get('/tasks/{id}/photo', [C\TaskController::class, 'photo'])->middleware('role:office');
+    Route::get('/tasks/{id}/signature', [C\TaskController::class, 'signature'])->middleware('role:office');
 ```
 
 - [ ] **Step 5: Run the test to see it pass**
 
-Run: `php vendor/bin/phpunit tests/TaskCompleteTest.php`
-Expected: `OK (13 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/TaskCompleteTest.php)`
+Expected: `Tests:    13 passed`.
 
 - [ ] **Step 6: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (114 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    113 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.10-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.10"/' composer.json
-git add site/app/tasks.php site/app/routes.php tests/ApiTestCase.php tests/TaskCompleteTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.10"/' site/composer.json
+git add site README.md
 git commit -m "Add closing a stop with proof and the next swap task at 0.4.10."
 ```
 
@@ -4818,20 +4929,28 @@ git commit -m "Add closing a stop with proof and the next swap task at 0.4.10."
 This task is the blocking **testing gate**. It adds no production code. A failing test here is a finding: fix it in the file that owns the rule, never by weakening the test.
 
 **Files:**
-- Test: `tests/LifecycleTest.php`
+- Test: `site/tests/Feature/LifecycleTest.php`
 
 **Interfaces:**
-- Consumes: every route built in Tasks 2 to 11; the test helpers `activateContract()`, `openHandover()`, `scanHandover()`, `proofFile()`, `epcs()`; the constants `ITEM_STATUSES`, `HANDOVERS`, `HELD_STATUSES`.
+- Consumes: every route built in Tasks 2 to 11; the test helpers `activateContract()`, `openHandover()`, `scanHandover()`, `proofFile()`, `epcs()`; the constants `Scan::STATUSES`, `Scan::HELD`, `HandoverController::TYPES`.
 - Produces: nothing new.
 
 - [ ] **Step 1: Write the test**
 
-Create `tests/LifecycleTest.php`:
+Create `site/tests/Feature/LifecycleTest.php`:
 
 ```php
 <?php
 /** The testing gate: one mat round the whole loop through the API, and the lifecycle rules as a table. */
 declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use App\Http\Controllers\HandoverController;
+use App\Support\Scan;
+use Illuminate\Support\Facades\DB;
+use PDOException;
+use Tests\ApiTestCase;
 
 final class LifecycleTest extends ApiTestCase
 {
@@ -4886,7 +5005,7 @@ final class LifecycleTest extends ApiTestCase
         $delivered = $this->closeStop($delivery,
             [['zone_id' => 1, 'epcs' => $this->epcs(1, 2)], ['zone_id' => 2, 'epcs' => $this->epcs(3)]], []);
         $swap = $delivered['next_task_id'];
-        $this->assertSame(days_after(today(), 14), q('SELECT due_date FROM tasks WHERE id = ?', [$swap])->fetchColumn());
+        $this->assertSame(days_after(today(), 14), DB::scalar('SELECT due_date FROM tasks WHERE id = ?', [$swap]));
         $this->assertSame('at_customer', $this->item(1)['status']);
 
         // 5. D + n: the office assigns the swap. Three clean mats go out, the three used ones come back.
@@ -4943,54 +5062,59 @@ final class LifecycleTest extends ApiTestCase
         ];
         foreach ($people as $type => [$giver, $receiver]) {
             $handover = $this->openHandover($giver, $type, $receiver);
-            foreach (ITEM_STATUSES as $status) {
-                if ($status === HANDOVERS[$type]['from']) {
+            foreach (Scan::STATUSES as $status) {
+                if ($status === HandoverController::TYPES[$type]['from']) {
                     continue;
                 }
                 $this->setItems([1], $status,
-                    in_array($status, HELD_STATUSES, true) ? $this->users['driver'] : null,
+                    in_array($status, Scan::HELD, true) ? $this->users['driver'] : null,
                     $status === 'at_customer' ? 1 : null);
                 $out = $this->scanHandover($giver, $handover, 1);
                 $this->assertSame('rejected', $out['results'][0]['result'], "$type must not take a mat that is $status");
                 $this->assertSame($status, $this->item(1)['status']);
             }
         }
-        $this->assertSame(0, (int) q('SELECT COUNT(*) FROM handover_items')->fetchColumn());
-        $this->assertSame(0, (int) q('SELECT COUNT(*) FROM item_events')->fetchColumn());
+        $this->assertSame(0, (int) DB::scalar('SELECT COUNT(*) FROM handover_items'));
+        $this->assertSame(0, (int) DB::scalar('SELECT COUNT(*) FROM item_events'));
     }
 
     public function test_the_database_itself_refuses_a_closed_stop_without_proof(): void
     {
         [$task] = $this->activateContract(1);
         $this->expectException(PDOException::class);
-        q("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP() WHERE id = ?", [$task]);
+        DB::statement("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP() WHERE id = ?", [$task]);
     }
 }
 ```
 
 - [ ] **Step 2: Run the test**
 
-Run: `php vendor/bin/phpunit tests/LifecycleTest.php`
-Expected: `OK (3 tests, ...)`.
+Run: `(cd site && php artisan test tests/Feature/LifecycleTest.php)`
+Expected: `Tests:    3 passed`.
 
-If a test fails, the failure names a broken rule. Find the owning file (`handovers.php` for a handover rule, `tasks.php` for a stop, `items.php` for the quality check), fix it there with its own failing test first, and run this file again. Do not change an assertion to match the code. If the server answered `500`, the reason is in `php-error.log` inside the folder that `php -r "echo sys_get_temp_dir();"` prints, under `laundry-test-storage`.
+If a test fails, the failure names a broken rule. Find the owning file (`HandoverController` for a handover rule, `TaskController` for a stop, `ItemController` for the quality check), fix it there with its own failing test first, and run this file again. Do not change an assertion to match the code. If the server answered `500`, the reason is in `site/storage/logs/laravel.log`.
 
 - [ ] **Step 3: Run the full suite twice**
 
-Run: `php vendor/bin/phpunit && php vendor/bin/phpunit`
-Expected: `OK (117 tests, ...)` both times. Two runs in a row prove that no test depends on what an earlier run left in the database or in the storage folder.
+Run: `(cd site && php artisan test && php artisan test)`
+Expected: `Tests:    116 passed` both times. Two runs in a row prove that no test depends on what an earlier run left in the database or in the storage folder.
 
-- [ ] **Step 4: Check every changed PHP file for syntax**
+- [ ] **Step 4: Check every PHP file of this plan for syntax**
 
-Run: `for f in site/app/*.php site/bin/*.php site/www/*.php tests/*.php; do php -l "$f" | grep -v "No syntax errors"; done; echo "lint done"`
+Run:
+
+```bash
+(cd site && for f in $(git ls-files 'app/*.php' 'routes/*.php' 'database/*.php' 'tests/*.php' 'config/laundry.php' 'bootstrap/app.php'); do php -l "$f" | grep -v "No syntax errors"; done; echo "lint done")
+```
+
 Expected: only `lint done`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.11-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.11"/' composer.json
-git add tests/LifecycleTest.php README.md composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.11"/' site/composer.json
+git add site README.md
 git commit -m "Add whole-loop lifecycle tests as the testing gate at 0.4.11."
 ```
 
@@ -5001,58 +5125,93 @@ git commit -m "Add whole-loop lifecycle tests as the testing gate at 0.4.11."
 This task is the blocking **security gate**. It reviews the whole branch against the Security section of ARCHITECTURE.md. It builds no feature. A finding is fixed in the file that owns it, with a test.
 
 **Files:**
-- Test: `tests/SecurityTest.php`
+- Test: `site/tests/Feature/SecurityTest.php`
 - Modify: only files in which a finding is fixed
 
 **Interfaces:**
-- Consumes: `site/app/routes.php` (read directly as data), every route, `activateContract()`.
+- Consumes: Laravel's router (`Route::getRoutes()`, read as data), every route, `activateContract()`.
 - Produces: nothing new.
 
 - [ ] **Step 1: Write the test**
 
-Create `tests/SecurityTest.php`:
+Create `site/tests/Feature/SecurityTest.php`:
 
 ```php
 <?php
 /** The security gate: every route needs a login and the right role, and hostile input stays data. */
 declare(strict_types=1);
 
-use PHPUnit\Framework\Attributes\DataProvider;
+namespace Tests\Feature;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Route;
+use Tests\ApiTestCase;
 
 final class SecurityTest extends ApiTestCase
 {
-    /** Every route that needs a login, read from the route table, so a new route is covered the day it is added. */
-    public static function guardedRoutes(): iterable
+    /**
+     * Every API route as "METHOD /path" => the roles that may call it, or null when it needs no login.
+     * Read from the router itself, so a new route is covered the day it is added.
+     */
+    private function apiRoutes(): array
     {
-        foreach (require __DIR__ . '/../site/app/routes.php' as [$method, $pattern, $roles]) {
-            if ($roles !== null) {
-                yield "$method $pattern" => [$method, preg_replace('/\{\w+\}/', '1', $pattern), $roles];
-            }
-        }
-    }
-
-    #[DataProvider('guardedRoutes')]
-    public function test_a_route_needs_a_login_and_the_right_role(string $method, string $path, array $roles): void
-    {
-        $this->assertError(401, 'not_logged_in', $this->api($method, $path));
-        foreach (['office', 'inventory', 'driver', 'washing', 'outbound'] as $role) {
-            if (in_array($role, $roles, true)) {
+        $routes = [];
+        foreach (Route::getRoutes() as $route) {
+            if (!str_starts_with($route->uri(), 'api/v1/')) {
                 continue;
             }
-            $this->loginAs($role);
-            $this->assertError(403, 'forbidden', $this->api($method, $path));
+            $middleware = $route->gatherMiddleware();
+            $roles = null;
+            if (in_array('auth:sanctum', $middleware, true)) {
+                $roles = User::ROLES;
+                foreach ($middleware as $name) {
+                    if (str_starts_with($name, 'role:')) {
+                        $roles = explode(',', substr($name, 5));
+                    }
+                }
+            }
+            foreach (array_diff($route->methods(), ['HEAD']) as $method) {
+                $routes["$method " . substr($route->uri(), strlen('api/v1'))] = $roles;
+            }
+        }
+        return $routes;
+    }
+
+    public function test_every_route_needs_a_login_and_the_right_role(): void
+    {
+        $guarded = array_filter($this->apiRoutes(), fn (?array $roles) => $roles !== null);
+        $this->assertCount(46, $guarded);
+
+        foreach ($guarded as $name => $roles) {
+            [$method, $path] = explode(' ', preg_replace('/\{\w+\}/', '1', $name));
+            $this->logout();
+            [$status, $body] = $this->api($method, $path);
+            $this->assertSame([401, 'not_logged_in'], [$status, $body['error']['code'] ?? null], "$name without a login");
+            foreach (array_diff(User::ROLES, $roles) as $role) {
+                $this->loginAs($role);
+                [$status, $body] = $this->api($method, $path);
+                $this->assertSame([403, 'forbidden'], [$status, $body['error']['code'] ?? null], "$name as $role");
+            }
         }
     }
 
     public function test_only_login_is_open_without_a_session(): void
     {
-        $open = [];
-        foreach (require __DIR__ . '/../site/app/routes.php' as [$method, $pattern, $roles]) {
-            if ($roles === null) {
-                $open[] = "$method $pattern";
-            }
-        }
+        $open = array_keys(array_filter($this->apiRoutes(), fn (?array $roles) => $roles === null));
         $this->assertSame(['POST /auth/login'], $open);
+    }
+
+    public function test_every_answer_carries_the_security_headers(): void
+    {
+        $headers = fn () => $this->json('GET', '/api/v1/auth/me')->headers;   // a 401: errors carry the headers too
+        $this->assertSame('nosniff', $headers()->get('X-Content-Type-Options'));
+        $this->assertStringContainsString('no-store', $headers()->get('Cache-Control'));
+        $this->assertNull($headers()->get('Strict-Transport-Security'));
+
+        $this->app['env'] = 'production';   // what APP_ENV=production in .env does
+        $this->assertSame('max-age=31536000', $headers()->get('Strict-Transport-Security'));
     }
 
     public function test_sql_in_a_login_or_a_search_stays_text(): void
@@ -5061,13 +5220,13 @@ final class SecurityTest extends ApiTestCase
             $this->api('POST', '/auth/login', ['username' => "' OR '1'='1", 'password' => "' OR '1'='1"]));
         $this->loginAs('office');
         $this->assertSame(0, $this->ok($this->api('GET', '/items?q=' . urlencode("' OR 1=1 -- ")))['total']);
-        $this->assertSame(40, (int) q('SELECT COUNT(*) FROM items')->fetchColumn());
+        $this->assertSame(40, (int) DB::scalar('SELECT COUNT(*) FROM items'));
     }
 
     public function test_a_tampered_proof_path_cannot_leave_the_proofs_folder(): void
     {
         [$task] = $this->activateContract(1);
-        q("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP(), photo_path = '../../../site/.env', signature_path = 'x.png' WHERE id = ?", [$task]);
+        DB::update("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP(), photo_path = '../../../.env', signature_path = 'x.png' WHERE id = ?", [$task]);
         $this->loginAs('office');
         $this->assertError(404, 'no_proof', $this->api('GET', "/tasks/$task/photo"));
     }
@@ -5078,77 +5237,77 @@ final class SecurityTest extends ApiTestCase
         $out = $this->ok($this->api('POST', '/users',
             ['name' => 'Dana', 'username' => 'dana', 'password' => 'long-password-1', 'role' => 'driver']));
         $this->assertStringNotContainsString('long-password-1', json_encode($out));
-        $hash = q("SELECT password_hash FROM users WHERE username = 'dana'")->fetchColumn();
+        $hash = DB::scalar("SELECT password_hash FROM users WHERE username = 'dana'");
         $this->assertStringStartsWith('$2y$', $hash);
-        $this->assertTrue(password_verify('long-password-1', $hash));
+        $this->assertTrue(Hash::check('long-password-1', $hash));
     }
 }
 ```
 
 - [ ] **Step 2: Run the test**
 
-Run: `php vendor/bin/phpunit tests/SecurityTest.php`
-Expected: `OK (50 tests, ...)`: 46 route cases and 4 other tests. If the number of route cases differs, a route was added or left out in an earlier task: compare `site/app/routes.php` with the route lists in Tasks 2 to 11 before going on.
+Run: `(cd site && php artisan test tests/Feature/SecurityTest.php)`
+Expected: `Tests:    6 passed`. The first test walks all 46 routes behind the login. If its count differs, a route was added or left out in an earlier task: compare `(cd site && php artisan route:list --path=api/v1)` with the route lists in Tasks 2 to 11 before going on.
 
-A failing case is a security finding. Fix it in the file that owns the route.
+A failing case is a security finding. Fix it in `site/routes/api.php` or in the controller that owns the route.
 
 - [ ] **Step 3: Check that no request value reaches SQL text**
 
-Run: `grep -nE '\$[a-zA-Z_]+' site/app/*.php | grep -E 'q\(|SELECT|INSERT|UPDATE|DELETE|WHERE|ORDER BY' | grep -vE '^\S+:\s*(//|\*)'`
+Run:
 
-Read every line it prints. A PHP variable inside SQL text is allowed only in this list, where it holds a constant from the code or text built from constants:
+```bash
+grep -nE '\$[a-zA-Z_]+' site/app/helpers.php site/app/Support/*.php site/app/Models/*.php site/app/Http/Controllers/*.php \
+  | grep -E 'rows\(|row\(|DB::|SELECT|INSERT|UPDATE|DELETE|WHERE|ORDER BY' | grep -vE '^\S+:\s*(//|\*)'
+```
+
+Read every line it prints. A PHP variable in the list of values **after** the SQL text is right: that is a bound `?`. A PHP variable **inside** the SQL text is allowed only in this list, where it holds a constant from the code or text built from constants:
 
 | File | Variable in SQL text | Why it is safe |
 |---|---|---|
-| `refdata.php` | `$table`, `$parent`, `$columns`, `$sets` | Names from the `REFDATA` constant |
-| `users.php` | `$sets` | Column names written in the function |
-| `items.php` | `$sqlWhere` | Fixed text with `?` marks |
-| `handovers.php` | `$where`, `$wash` | Fixed text with `?` marks |
-| `scan.php` | `$sql` | `ITEM_SELECT` plus `?` marks |
-| `tasks.php`, `items.php`, `handovers.php`, `scan.php` | `marks(...)`, `implode(' AND ', $where)` | `?` marks and fixed text |
+| `helpers.php` | `$sql`, `$statement` | `rows()` and `row()` pass on the SQL their caller wrote; `run_sql_file()` only ever gets the two files in `db/` |
+| `RefdataController.php` | `$table`, `$parent` | Names from the `RESOURCES` constant; the values go through the query builder |
+| `ItemController.php` | `$sqlWhere` | Fixed text with `?` marks |
+| `HandoverController.php` | `$where`, `$wash` | Fixed text with `?` marks |
+| `Scan.php` | `$sql` | `ITEM_SELECT` plus `?` marks |
+| `TaskController.php`, `ItemController.php`, `HandoverController.php`, `Scan.php` | `marks(...)`, `implode(' AND ', $where)`, `self::SELECT`, `self::OFFICE_SELECT`, `self::ISSUE` | `?` marks and fixed text |
 
 Anything else that puts a variable into SQL text is a finding: replace it with a `?` parameter.
 
-- [ ] **Step 4: Check secrets and file placement**
+- [ ] **Step 4: Check secrets, settings and file placement**
 
 Run:
 
 ```bash
-git ls-files | grep -E '(^|/)\.env(\.test)?$|^site/storage/|composer\.phar|^vendor/' ; echo "tracked-files check done"
-git grep -nE 'DB_PASS' -- site tests | grep -v "cfg('DB_PASS')" | grep -v '.env.example' ; echo "password check done"
-ls site/www
+git ls-files | grep -E '(^|/)\.env(\.testing)?$|^site/storage/app/private/proofs/|^site/vendor/|composer\.phar' ; echo "tracked-files check done"
+git grep -nE '\benv\(' -- site/app site/routes site/database site/tests site/bootstrap ; echo "env check done"
+git grep -nE 'DB_PASSWORD=.' -- site | grep -v 'DB_PASSWORD=""' ; echo "password check done"
+ls -A site/public
 ```
 
-Expected: the first two commands print only their `done` line. `ls site/www` shows exactly `index.php` (plus the dot files `.htaccess` and `.user.ini`, which `ls` hides). No PHP file with business code, no `storage`, no `.env` inside the web root.
+Expected: the first three commands print only their `done` line (the empty `DB_PASSWORD=""` in `site/.env.example` is filtered out). `ls -A site/public` shows exactly `.htaccess`, `.user.ini`, `favicon.ico`, `index.php` and `robots.txt`. No business code, no `storage`, no `.env` inside the web root.
 
-- [ ] **Step 5: Check the response headers and the cookie over HTTP**
+A hit of the second command is a setting read outside `site/config`: move it into a config file and read it with `config(...)`, or `php artisan config:cache` will break it on the server.
 
-Start the server in the background (`run_in_background: true`):
+- [ ] **Step 5: Check the cookie and the web root over HTTP**
+
+Start the server in the background (`run_in_background: true`). The two extra settings are what the server's `.env` has; given this way they win over `site/.env.testing`:
 
 ```bash
-ENV_FILE=.env.test APP_ENV=production php -S 127.0.0.1:8080 site/www/index.php
+(cd site && APP_ENV=testing SESSION_SECURE_COOKIE=true APP_DEBUG=false php -S 127.0.0.1:8000 -t public)
 ```
 
 Run:
 
 ```bash
-printf 'Sec Office\nsec.office\nsec-password-12\n' | ENV_FILE=.env.test php site/bin/create-office-user.php
-curl -s -i -H 'Content-Type: application/json' -d '{"username":"sec.office","password":"sec-password-12"}' http://127.0.0.1:8080/api/v1/auth/login | grep -iE '^(HTTP|set-cookie|x-content-type-options|cache-control|strict-transport-security)'
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/app/db.php
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/.env
+(cd site && php artisan tinker --env=testing --execute="App\Models\User::register(['name' => 'Sec Office', 'username' => 'sec.office', 'password' => 'sec-password-12', 'role' => 'office']);")
+curl -s -i -H 'Origin: http://127.0.0.1:8000' -H 'Sec-Fetch-Site: same-origin' -H 'Accept: application/json' -H 'Content-Type: application/json' \
+  -d '{"username":"sec.office","password":"sec-password-12"}' http://127.0.0.1:8000/api/v1/auth/login \
+  | grep -iE '^(HTTP|set-cookie|x-content-type-options|cache-control)'
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/.env
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/composer.json
 ```
 
-Expected:
-
-```
-HTTP/1.1 200 OK
-X-Content-Type-Options: nosniff
-Cache-Control: no-store
-Strict-Transport-Security: max-age=31536000
-Set-Cookie: laundry=...; path=/; secure; HttpOnly; SameSite=Lax
-404
-404
-```
+Expected: `HTTP/1.1 200 OK`, `X-Content-Type-Options: nosniff`, a `Cache-Control` with `no-store`, two `Set-Cookie` lines that both contain `secure` and `samesite=lax` (the session cookie also `httponly`; the `XSRF-TOKEN` cookie is meant to be read by the page and is not), and then two times `404`: files outside `site/public` cannot be fetched.
 
 Stop the background server.
 
@@ -5158,35 +5317,35 @@ For each line, confirm the place in the code and the test. Write the table, with
 
 | Security rule in ARCHITECTURE.md | Where it is enforced | Test |
 |---|---|---|
-| HTTPS only | `site/www/.htaccess` redirect, `Strict-Transport-Security` and `secure` cookie in `index.php` when `APP_ENV=production` | Step 5 |
-| Passwords stored as a hash | `user_insert()`, `users_update()` | `SecurityTest::test_a_password_is_stored_only_as_a_hash` |
-| Login limited per username and address | `auth_login()`, `throttle_recent()` | `AuthTest::test_five_failed_tries_block_the_sixth_even_with_the_right_password` |
-| Cookie `HttpOnly`, `Secure`, `SameSite=Lax` | `index.php` | Step 5 |
-| CSRF token on every changing request | `route()` | `AuthTest::test_a_changing_request_needs_the_csrf_token` |
-| Session id renewed at login | `auth_login()` calls `session_regenerate_id(true)` | Read the code |
-| Switched-off user is out at his next call | `current_user()` | `AuthTest::test_a_user_switched_off_while_logged_in_is_logged_out_at_his_next_call` |
-| Role checked on the server for every call | `route()` | `SecurityTest::test_a_route_needs_a_login_and_the_right_role` |
-| Ownership checked on the server | `tasks_complete()`, `handovers_scan()`, `handovers_get()`, `handovers_close()`, `items_list()` | `TaskCompleteTest::test_only_the_assigned_driver_closes_a_stop_and_only_once`, `HandoverScanTest::test_only_the_two_people_of_a_handover_may_scan_into_it`, `ItemsTest::test_each_role_sees_only_its_own_mats` |
-| All SQL uses prepared statements | `q()` | Step 3, `SecurityTest::test_sql_in_a_login_or_a_search_stays_text` |
-| Uploads checked by content, size limit, server-made name, outside the web root, served only to the office | `proof_in()`, `tasks_complete()`, `tasks_proof()` | `TaskCompleteTest` (three proof tests), `SecurityTest::test_a_tampered_proof_path_cannot_leave_the_proofs_folder` |
-| Secrets in `.env` and `.env.test`, never in git | `.gitignore`, `cfg()` | Step 4 |
-| Simulator off in production use | `simulator_on()`, `sim_items()`, `source_in()` | `ScanTest::test_switching_the_simulator_off_closes_its_list_and_refuses_its_scans` |
-| Corrections leave a trace | `items_correct()` | `ItemsTest::test_a_correction_moves_the_mat_and_leaves_a_trace` |
-| A lookup does not show the customer | `item_view()` | `ScanTest::test_lookup_tells_what_each_mat_is_and_changes_nothing` |
+| HTTPS only | `site/public/.htaccess` redirect; `Strict-Transport-Security` in `ApiHeaders` when `APP_ENV=production`; `SESSION_SECURE_COOKIE=true` | `SecurityTest::test_every_answer_carries_the_security_headers`, Step 5 |
+| Passwords stored as a hash | `User::register()`, `UserController::update()`, both through `Hash::make()` | `SecurityTest::test_a_password_is_stored_only_as_a_hash` |
+| Login limited per username and address | `AuthController::login()` with `RateLimiter` | `AuthTest::test_five_failed_tries_block_the_sixth_even_with_the_right_password` |
+| Cookie `HttpOnly`, `Secure`, `SameSite=Lax` | Laravel's session (`site/config/session.php`), `SESSION_SECURE_COOKIE` in `.env` | Step 5 |
+| Forgery check on every changing request | Laravel's own check, put on the API by `statefulApi()` in `site/bootstrap/app.php` | Task 4 Step 5, answer 3. By hand: Laravel switches this check off inside its own test runner |
+| Session id renewed at login | `AuthController::login()` calls `session()->regenerate()` | Read the code |
+| Switched-off user is out at his next call | `Role` middleware | `AuthTest::test_a_user_switched_off_while_logged_in_is_logged_out_at_his_next_call` |
+| Role checked on the server for every call | `auth:sanctum` and `role` in `site/routes/api.php` | `SecurityTest::test_every_route_needs_a_login_and_the_right_role` |
+| Ownership checked on the server | `TaskController::complete()`, `HandoverController::scan()`, `show()`, `close()`, `ItemController::index()` | `TaskCompleteTest::test_only_the_assigned_driver_closes_a_stop_and_only_once`, `HandoverScanTest::test_only_the_two_people_of_a_handover_may_scan_into_it`, `ItemsTest::test_each_role_sees_only_its_own_mats` |
+| All SQL uses prepared statements | `rows()`, `row()` and `DB::` calls with `?` marks | Step 3, `SecurityTest::test_sql_in_a_login_or_a_search_stays_text` |
+| Uploads checked by content, size limit, server-made name, outside the web root, served only to the office | `TaskController::proof()`, `complete()`, `proofFile()` | `TaskCompleteTest` (three proof tests), `SecurityTest::test_a_tampered_proof_path_cannot_leave_the_proofs_folder` |
+| Secrets in `.env` and `.env.testing`, never in git | `site/.gitignore`; settings only through `site/config` | Step 4 |
+| Error details stay on the server | `api_error()` with `APP_DEBUG=false` | `AuthTest::test_a_server_error_hides_its_details_unless_debug_is_on` |
+| Simulator off in production use | `Scan::source()`, `ScanController::simItems()`, `site/config/laundry.php` | `ScanTest::test_switching_the_simulator_off_closes_its_list_and_refuses_its_scans` |
+| Corrections leave a trace | `ItemController::correct()` | `ItemsTest::test_a_correction_moves_the_mat_and_leaves_a_trace` |
+| A lookup does not show the customer | `Scan::view()` | `ScanTest::test_lookup_tells_what_each_mat_is_and_changes_nothing` |
 | Personal data: how long proofs are kept | Not built: a question for Proti | Report as open |
 
 The gate passes when there is no unresolved finding of critical or high severity. List lower findings in the report.
 
 - [ ] **Step 7: Run all tests and commit**
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (167 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    122 passed`.
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.4.12-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.4.12"/' composer.json
-git add tests/SecurityTest.php README.md composer.json
-git add -u site
+sed -i 's/"version": "[0-9.]*"/"version": "0.4.12"/' site/composer.json
+git add site README.md
 git commit -m "Add role matrix and security tests as the security gate at 0.4.12."
 ```
 
@@ -5197,14 +5356,14 @@ git commit -m "Add role matrix and security tests as the security gate at 0.4.12
 The docs pass runs after both gates, so the documents describe what was built. The updated endpoint table in ARCHITECTURE.md is the **API contract** that plans 2 and 3 (the React app) build against.
 
 **Files:**
-- Modify: `ARCHITECTURE.md` (version line, endpoint section, settings table, first login, wash count, time zone)
+- Modify: `ARCHITECTURE.md` (version line, built-with table, hosting section, settings table, endpoint section, first login, security, wash count, time zone)
 - Modify: `POC.md`, `FEATURES.md`, `FLOW.md` (wash count at Handover C)
 - Modify: `db/schema.sql` (two comment lines only, no table or column)
-- Modify: `README.md` (status note, diagrams, new section, version badge)
-- Modify: `composer.json` (version)
+- Modify: `README.md` (status note, diagrams, two new sections, version badge)
+- Modify: `site/composer.json` (version)
 
 **Interfaces:**
-- Consumes: the routes in `site/app/routes.php` as built.
+- Consumes: the routes in `site/routes/api.php` as built.
 - Produces: the published API contract.
 
 `ARCHITECTURE.md` had one uncommitted edit before this plan was written (the "Mat history" cell for the washing house manager says `Yes`). If `git status` still shows it as modified at the start of this task, that edit is the user's: keep it and commit it together with this task's changes.
@@ -5252,45 +5411,121 @@ In the section `### Endpoints`, replace the whole table (from the line `| Method
 | `POST /handovers/{id}/items/{itemId}/resolve` | O | `{note}` → marks a handover issue as handled |
 | `GET /sim/items` | I D W X | Simulator only, see below |
 
-Every changing request (everything except `GET` and the login) must carry the header `X-CSRF-Token` with the `csrf_token` from the login or from `GET /auth/me`.
+Laravel checks every changing request (everything except `GET`) for forgery. A request passes when the browser marks it as same-origin, or when it carries the header `X-CSRF-Token` with the `csrf_token` from the login or from `GET /auth/me`. The web app sends that header on every changing request. The session cookie only works for requests from the site's own address.
 ```
 
 Below the error example in the same section, replace the line that starts with `` `401` not logged in `` with:
 
 ```markdown
-`401` not logged in · `403` wrong role, not yours, or bad CSRF token · `404` not found · `405` wrong method · `409` already done, closed, duplicate or wrong status · `422` input not valid · `429` too many login tries.
+`401` not logged in · `403` wrong role, not yours, or failed forgery check · `404` not found · `405` wrong method · `409` already done, closed, duplicate or wrong status · `422` input not valid · `429` too many login tries.
 ```
 
-- [ ] **Step 2: Update the settings and the first login in ARCHITECTURE.md**
+- [ ] **Step 2: Describe the Laravel build in ARCHITECTURE.md**
 
-In the table under "Settings the backend reads from `.env`", add this row after the `SCANNER_SIMULATOR` row:
+In each replacement, "Replace" is the exact text now in the file.
+
+In the table under `## Overview`. Replace:
 
 ```markdown
-| `STORAGE_DIR` | Optional. Folder for proof files, sessions and login throttle files. Default: `site/storage`. |
+| Backend | PHP 8.3+ JSON API | Login, role checks, every business rule, every status change. The frontend never decides whether a mat may move. |
 ```
 
-Directly under that table, add:
+With:
 
 ```markdown
-There is no database on the development machine. The tests use a second database at TransIP, named in `site/.env.test`, and wipe it on every run. Starting PHP with the environment variable `ENV_FILE=.env.test` makes the backend read that file instead of `.env`. The test database is reachable from outside the hosting; the real one is not.
+| Backend | Laravel 13 on PHP 8.3+, JSON API | Login, role checks, every business rule, every status change. The frontend never decides whether a mat may move. Laravel does the login session, the forgery check, input validation and file storage; the rules are this project's own code. |
+```
+
+In the section `## Hosting at TransIP`. Replace:
+
+````markdown
+```
+site/
+  app/               PHP backend code            (not reachable from the web)
+  storage/proofs/    photos and signatures       (not reachable from the web)
+  .env               database password, settings (not reachable from the web, never in git)
+  www/               web root
+    index.php        entry point for /api/v1/*
+    index.html       the React app
+    assets/          the React build
+    .htaccess        /api/* -> index.php, everything else -> index.html
+```
+````
+
+With:
+
+````markdown
+```
+db/                  schema.sql and seed.sql      (not reachable from the web)
+site/                the Laravel application
+  app/               backend code                 (not reachable from the web)
+  routes/api.php     every API route and who may call it
+  storage/           proofs, sessions, logs       (not reachable from the web)
+  .env               database password, settings  (not reachable from the web, never in git)
+  public/            web root: the site's DocumentRoot points here
+    index.php        Laravel's entry point, serves /api/v1/*
+    .htaccess        HTTPS only; everything that is not a file goes to index.php
+```
+
+The web root must point at `site/public`. It needs SSH on the hosting, for `composer` and `php artisan`. Where the React app's files go is decided in the frontend plan.
+````
+
+Replace the settings table:
+
+```markdown
+| Name | Meaning |
+|---|---|
+| `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASS` | Database connection, from the TransIP control panel |
+| `APP_ENV` | `local` or `production` |
+| `SCANNER_SIMULATOR` | `true` while the handheld is simulated. `false` switches the simulator and its helper endpoint off. |
+```
+
+With:
+
+```markdown
+| Name | Meaning |
+|---|---|
+| `APP_KEY` | Secret key for cookies and sessions. Made once with `php artisan key:generate`. |
+| `APP_ENV` | `production` on the server |
+| `APP_DEBUG` | `false` on the server: error details stay in the log |
+| `APP_URL` | The address of the site, with `https://`. The login cookie only works for the web app at this address. |
+| `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` | Database connection, from the TransIP control panel |
+| `SCANNER_SIMULATOR` | `true` while the handheld is simulated. `false` switches the simulator and its helper endpoint off. |
+| `SESSION_SECURE_COOKIE` | `true` on the server: the login cookie travels over HTTPS only |
+
+Nothing that differs per machine is written in the code. `site/.env.example` lists every setting with a comment. After a change to `.env` on the server, run `php artisan config:cache`.
+
+There is no database on the development machine. The tests use a second database at TransIP, named in `site/.env.testing`, and rebuild it on every run. The test database is reachable from outside the hosting; the real one is not.
+```
+
+Directly after the paragraph that starts with `On every database connection the backend runs`, add:
+
+```markdown
+Times are stored and sent in UTC, not in Dutch time. Dutch time repeats one hour every autumn and skips one every spring, so two scans in that night could not be put in order. A named time zone also needs time zone tables that a shared database often does not have. The screens show every time in Dutch time. Calendar days (due dates, wash dates) are Dutch calendar days.
+
+Laravel adds two tables of its own next to the 13 of `db/schema.sql`: `migrations` (which set-up steps ran) and `personal_access_tokens` (empty until the handheld logs in with a token).
 ```
 
 In the section `### First login`, replace the paragraph with:
 
 ```markdown
-No user is seeded, because a password must not sit in a file in git. After loading the schema, the first office user is created once on the server:
+No user is seeded, because a password must not sit in a file in git. After the tables are built, the first office user is created once on the server:
 
-    php site/bin/create-office-user.php
+    php artisan laundry:office-user
 
-The command asks for the name, the username and the password (10 to 72 characters). That user then adds everyone else in the office console.
+The command asks for the name, the username and the password (10 to 72 characters, hidden while typing). That user then adds everyone else in the office console.
 ```
 
-In the Security section, replace the sentence `Login is limited to a few tries per minute per username and address.` with `Login is limited to 5 failed tries per minute per username and address.`
-
-In the section `## Hosting at TransIP`, add this paragraph directly after the paragraph that starts with `On every database connection the backend runs`:
+In the Security section. Replace:
 
 ```markdown
-Times are stored and sent in UTC, not in Dutch time. Dutch time repeats one hour every autumn and skips one every spring, so two scans in that night could not be put in order. A named time zone also needs time zone tables that a shared database often does not have. The screens show every time in Dutch time. Calendar days (due dates, wash dates) are Dutch calendar days.
+- **Passwords** are stored only as a hash (PHP `password_hash`). Login is limited to a few tries per minute per username and address.
+```
+
+With:
+
+```markdown
+- **Passwords** are stored only as a hash (bcrypt, through Laravel's `Hash`). Login is limited to 5 failed tries per minute per username and address.
 ```
 
 - [ ] **Step 3: Move the wash count to Handover C in the documents**
@@ -5498,28 +5733,61 @@ Replace the NOTE block under `## What it is` with:
 
 ```markdown
 > [!NOTE]
-> **Backend built, screens not yet.** The PHP API under `/api/v1` is built and tested. The web app (office console and scanner simulator) is the next step. The Chainway C72 handheld is simulated, and all mats are mock mats.
+> **Backend built, screens not yet.** The Laravel API under `/api/v1` is built and tested. The web app (office console and scanner simulator) is the next step. The Chainway C72 handheld is simulated, and all mats are mock mats.
 ```
 
-Add this section directly before `## Versions`:
+Replace:
+
+```markdown
+Both files run unchanged on MySQL 8.0.16+ and MariaDB 10.4+. At TransIP the same two files can be imported through phpMyAdmin.
+```
+
+With:
+
+```markdown
+Both files run unchanged on MySQL 8.0.16+ and MariaDB 10.4+. Laravel loads them: `php artisan migrate` runs `db/schema.sql`, `php artisan db:seed` runs `db/seed.sql`.
+```
+
+Add these two sections directly before `## Versions`:
 
 ````markdown
 ## Run the API locally
 
-Needs PHP 8.3+ and a test database at TransIP that can be reached from outside the hosting. No database is installed locally. Copy `site/.env.example` to `site/.env.test` and fill in the details of the **test** database. The tests wipe that database on every run, so it must never be the real one.
+Needs PHP 8.3+, Composer, and a test database at TransIP that can be reached from outside the hosting. No database is installed locally. Copy `site/.env.example` to `site/.env.testing`, set `APP_ENV=testing`, `APP_DEBUG=true`, `APP_URL=http://127.0.0.1:8000` and `SESSION_SECURE_COOKIE=false`, and fill in the details of the **test** database. The tests rebuild that database on every run, so it must never be the real one.
 
 ```bash
-php composer.phar install                                  # PHPUnit, for the tests only
-php vendor/bin/phpunit                                     # wipes and rebuilds the test database, then runs
-ENV_FILE=.env.test php site/bin/create-office-user.php     # a user to log in with
-ENV_FILE=.env.test php -S 127.0.0.1:8080 site/www/index.php
+cd site
+composer install
+php artisan key:generate --env=testing     # once
+php artisan test                           # rebuilds the test database, then runs
+php artisan laundry:office-user --env=testing             # a user to log in with
+APP_ENV=testing php -S 127.0.0.1:8000 -t public
 ```
 
-The next test run wipes the test database, and that user with it.
+The next test run rebuilds the test database, and that user is gone with it.
 
-The API then answers at `http://127.0.0.1:8080/api/v1`. The endpoints are listed in [ARCHITECTURE.md](ARCHITECTURE.md#endpoints).
+The API then answers at `http://127.0.0.1:8000/api/v1`. The endpoints are listed in [ARCHITECTURE.md](ARCHITECTURE.md#endpoints).
 
-To put it on the server: upload the `site` folder, point the web root at `site/www`, create `site/.env` there with the details of the real database, load `db/schema.sql` and `db/seed.sql` through phpMyAdmin, and run `php site/bin/create-office-user.php` once.
+## Put it on TransIP
+
+Needs a web hosting package with SSH, PHP 8.3+ and a web root that can be pointed at a subfolder. Every setting lives in `site/.env` on the server; nothing is hardcoded.
+
+```bash
+# over SSH, in a folder that is not reachable from the web
+git clone <this repository> laundry
+cd laundry/site
+composer install --no-dev --optimize-autoloader
+cp .env.example .env                 # then fill in APP_URL and the real database
+php artisan key:generate
+php artisan migrate --force          # builds the tables from db/schema.sql
+php artisan db:seed --force          # the mock data of db/seed.sql, for the demo only
+php artisan laundry:office-user      # the first office user
+php artisan config:cache             # again after every change to .env
+```
+
+Then, in the TransIP control panel, point the site's web root (DocumentRoot) at `laundry/site/public` and switch HTTPS on. The folders `site/storage` and `site/bootstrap/cache` must be writable by PHP.
+
+Never run `php artisan migrate:fresh` or `php artisan test` on the server: both empty the database they are pointed at.
 ````
 
 - [ ] **Step 5: Check the documents against the code**
@@ -5527,26 +5795,27 @@ To put it on the server: upload the `site` folder, point the web root at `site/w
 Run:
 
 ```bash
-php -r '
+(cd site && php artisan route:list --path=api/v1 --json) | php -r '
 $doc = file_get_contents("ARCHITECTURE.md");
-foreach (require "site/app/routes.php" as [$method, $pattern]) {
-    $last = substr($pattern, strrpos($pattern, "/"));
-    if (!str_contains($doc, $pattern) && !str_contains($doc, $last)) echo "NOT IN ARCHITECTURE.md: $method $pattern\n";
+foreach (json_decode(stream_get_contents(STDIN), true) as $route) {
+    $path = substr($route["uri"], strlen("api/v1"));
+    $last = substr($path, strrpos($path, "/"));
+    if (!str_contains($doc, $path) && !str_contains($doc, $last)) echo "NOT IN ARCHITECTURE.md: {$route["method"]} $path\n";
 }
 echo "contract check done\n";'
 ```
 
 Expected: only `contract check done`. A line `NOT IN ARCHITECTURE.md` names a route the endpoint table misses: add it to the table.
 
-Run: `php vendor/bin/phpunit`
-Expected: `OK (167 tests, ...)`.
+Run: `(cd site && php artisan test)`
+Expected: `Tests:    122 passed`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 sed -i 's/version-[0-9.]*-2563eb/version-0.5.0-2563eb/' README.md
-sed -i 's/"version": "[0-9.]*"/"version": "0.5.0"/' composer.json
-git add ARCHITECTURE.md POC.md FEATURES.md FLOW.md README.md db/schema.sql composer.json
+sed -i 's/"version": "[0-9.]*"/"version": "0.5.0"/' site/composer.json
+git add ARCHITECTURE.md POC.md FEATURES.md FLOW.md README.md db/schema.sql site/composer.json
 git commit -m "Publish the API contract and move the wash count to Handover C in the documents at 0.5.0."
 ```
 
@@ -5558,33 +5827,34 @@ Put these blocks in the final report, with the two "Open risks" lines completed 
 
 ```
 ### HANDOFF — backend
-- Produced:      site/app/*.php, site/www/{index.php,.htaccess,.user.ini}, site/bin/create-office-user.php, site/.env.example
-- Contract:      the endpoint table and the "How data flows" section of ARCHITECTURE.md 0.4.0. All paths under /api/v1, JSON in and out, session cookie "laundry", header X-CSRF-Token on every changing request, errors as {"error": {"code", "message"}}.
-- Assumptions:   the frontend never decides whether a mat may move; it shows what the API answers. Lists are small enough to load whole, except GET /items, which pages by 50. Every time in an answer is UTC ("2026-10-12 21:03:11"); the screens show it in Dutch time. Dates (due_date, wash dates) are Dutch calendar days and are shown as they are.
-- Do NOT change: paths, field names, the result words found / not_on_list / unknown / rejected, the error codes, db/schema.sql.
+- Produced:      site/ (a Laravel 13 application): routes/api.php, app/Http/Controllers/*, app/Http/Middleware/*, app/Support/Scan.php, app/Models/User.php, app/helpers.php, config/laundry.php, bootstrap/app.php, the migration that loads db/schema.sql, public/{.htaccess,.user.ini}, .env.example
+- Contract:      the endpoint table and the "How data flows" section of ARCHITECTURE.md 0.4.0. All paths under /api/v1, JSON in and out (closing a stop is a form with the JSON in "payload"), a session cookie set by Laravel, header X-CSRF-Token on every changing request, errors as {"error": {"code", "message"}}.
+- Assumptions:   the web app is served from the address in APP_URL, so its requests carry the session cookie. The frontend never decides whether a mat may move; it shows what the API answers. Lists are small enough to load whole, except GET /items, which pages by 50. Every time in an answer is UTC ("2026-10-12 21:03:11"); the screens show it in Dutch time. Dates (due_date, wash dates) are Dutch calendar days and are shown as they are.
+- Do NOT change: paths, field names, the result words found / not_on_list / unknown / rejected, the error codes, db/schema.sql. Status changes stay one conditional UPDATE; never load, change and save.
 - Open risks:    <from the Task 12 and Task 13 reports>. The picture flow-0.1.6.png still shows the wash count at Handover B and must be rendered again.
 
 ### HANDOFF — testing
-- Produced:      tests/*.php, phpunit.xml. 167 tests, all against the TransIP test database.
-- Contract:      php vendor/bin/phpunit is green. It reads only site/.env.test, wipes that database, and refuses to run when it is the database of site/.env.
+- Produced:      site/tests/*, site/phpunit.xml. 122 tests, all against the TransIP test database.
+- Contract:      (cd site && php artisan test) is green. It reads only site/.env.testing, rebuilds that database, and refuses to run when it is the database of site/.env.
 - Assumptions:   the TransIP test database exists and is reachable from the development machine.
 - Do NOT change: an assertion to make failing code pass.
-- Open risks:    no test runs two requests at the same moment; row locks and conditional updates are reasoned, not load-tested. index.php is checked by hand with curl, not by PHPUnit.
+- Open risks:    no test runs two requests at the same moment; row locks and conditional updates are reasoned, not load-tested. The forgery check and the real cookie are checked by hand with curl, not by the test suite.
 
 ### HANDOFF — security
-- Produced:      tests/SecurityTest.php and the review table of Task 13.
+- Produced:      site/tests/Feature/SecurityTest.php and the review table of Task 13.
 - Contract:      no unresolved critical or high finding.
-- Assumptions:   HTTPS is switched on at TransIP, and site/www is the web root.
-- Do NOT change: SCANNER_SIMULATOR must be false before real mats are registered.
-- Open risks:    <from the Task 13 report>. Still to check at TransIP: database engine and version, PHP version, that .user.ini is honoured, and that the HTTPS redirect in .htaccess works behind TransIP's proxy.
+- Assumptions:   HTTPS is switched on at TransIP, and site/public is the web root.
+- Do NOT change: SCANNER_SIMULATOR must be false before real mats are registered. APP_DEBUG must be false on the server.
+- Open risks:    <from the Task 13 report>. Still to check at TransIP: database engine and version, PHP version, that .user.ini is honoured, that the HTTPS redirect in .htaccess works behind TransIP's proxy, and whether the address Laravel sees is the visitor's own (the login throttle counts per username and address).
 ```
 
 ---
 
 ## Not in this plan
 
-- The React office console and scanner simulator (plans 2 and 3).
-- Token login for the Chainway C72. The session cookie is enough while the scanner is the web app.
-- Deployment to TransIP. The `site` folder is ready to upload; doing it needs the hosting details.
-- Cleaning up old throttle files, session files and proof files. How long proofs are kept is a question for Proti.
+- The React office console and scanner simulator (plans 2 and 3), and where their built files go inside `site`.
+- Token login for the Chainway C72. Sanctum and its table are in place; issuing tokens is a small task of its own when the handheld comes.
+- Doing the deployment. The steps are written down in Task 14 ("Put it on TransIP"); running them needs the hosting details.
+- Cleaning up old session files, log files and proof files. How long proofs are kept is a question for Proti.
 - Paging for handovers and tasks. Both lists return the newest rows only (100 and 200).
+- Eloquent models for mats, handovers, contracts and tasks. The rules are conditional SQL updates on purpose; models can come later for read-only screens if they help.
