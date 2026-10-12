@@ -1,13 +1,13 @@
 # Proposed flow
 
-Version: 0.1.4
+Version: 0.1.5
 
 Proposed mat lifecycle for the RFID laundry POC. Defaults that still need client confirmation are listed under the diagram.
 
-![Proposed flow](flow-0.1.4.png)
+![Proposed flow](flow-0.1.5.png)
 
 <details>
-<summary>Mermaid source for flow-0.1.4.png</summary>
+<summary>Mermaid source for flow-0.1.5.png</summary>
 
 ```mermaid
 flowchart TD
@@ -18,11 +18,13 @@ flowchart TD
         REG["Register<br/>2 tags, same EPC, 2 TIDs<br/>primary + secondary"] --> READY["Ready to use"]
         READY --> QC{"QC"}
         QC -- pass --> OUT["Outbound"]
+        QC -- fail --> FIX["Rewash (to 4)<br/>Repair<br/>Scrap"]:::side
     end
 
     subgraph SITE[" "]
         T2["2 SITE"]:::phase ~~~ DEL
         DEL["Driver delivers<br/>scan list, photo, signature"] --> ATC["At customer<br/>D = today, due = D+n"]
+        DEL -. "refused or<br/>undelivered" .-> REF["Back to 1<br/>Ready to use<br/>no wash"]:::side
     end
 
     subgraph LOG[" "]
@@ -35,20 +37,16 @@ flowchart TD
         INW["In washing<br/>previous date = old current date<br/>current date = today<br/>cycle +1"]
     end
 
-    FIX["Rewash / Repair / Scrap"]
+    BACK(["Back to 1 INVENTORY<br/>Ready to use"])
 
-    SETUP -- "creates delivery task" --> OUT
-    OUT -- "Handover A<br/>inventory scans out, driver scans in" --> DEL
+    SETUP -- "creates<br/>delivery task" --> INV
+    OUT -- "Handover A<br/>inventory scans out<br/>driver scans in" --> DEL
     ATC -- "D+n reached" --> SWAP
-    SWAP -. "clean mat placed" .-> ATC
-    PICKED -- "Handover B<br/>driver scans out, washing scans in" --> INW
-    INW -- "Handover C<br/>washing scans out, inventory scans in (optional)" --> READY
-
-    QC -- fail --> FIX
-    FIX -. "rewash" .-> INW
-    DEL -. "refused or undelivered, no wash" .-> READY
+    PICKED -- "Handover B<br/>driver scans out<br/>washing scans in" --> INW
+    INW -- "Handover C<br/>washing scans out<br/>inventory scans in (optional)" --> BACK
 
     classDef phase fill:none,stroke:none,font-weight:bold,font-size:18px
+    classDef side stroke-dasharray:4 3
 ```
 
 </details>
