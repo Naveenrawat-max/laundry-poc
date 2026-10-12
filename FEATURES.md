@@ -1,6 +1,6 @@
 # Feature list
 
-Version: 0.2.0
+Version: 0.2.1
 
 RFID mat tracking for Proti. Proti rents door mats to its customers, delivers and collects them with its own drivers, and washes them in its own washing house. The flow these features follow is drawn in [FLOW.md](FLOW.md).
 
