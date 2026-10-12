@@ -1,6 +1,6 @@
 # Backend API Implementation Plan
 
-Version: 0.1.0
+Version: 0.2.0
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +12,7 @@ Version: 0.1.0
 
 **Spec:** [ARCHITECTURE.md](../../../ARCHITECTURE.md), with [POC.md](../../../POC.md), [FEATURES.md](../../../FEATURES.md), [FLOW.md](../../../FLOW.md) and [db/schema.sql](../../../db/schema.sql).
 
-**Checked:** every code block in this plan was put together in a scratch copy and run on PHP 8.4.19 with MariaDB 11.4.13. All 167 tests pass, twice in a row and each test file on its own, and the web entry point was tried with curl: login, CSRF token, closing a stop with an uploaded photo and signature, fetching the photo back. A step that fails during execution therefore points at a typing slip or a difference in the machine, not at the plan's logic. Not checked: Apache with `.htaccess` and `.user.ini`, MySQL, and the newer MariaDB that `winget` installs.
+**Checked:** every code block in this plan was put together in a scratch copy and run on PHP 8.4.19 with MariaDB 11.4.13. All 167 tests pass, twice in a row and each test file on its own, and the web entry point was tried with curl: login, CSRF token, closing a stop with an uploaded photo and signature, fetching the photo back. A step that fails during execution therefore points at a typing slip or a difference in the machine, not at the plan's logic. Not checked: Apache with `.htaccess` and `.user.ini`, and the database TransIP actually runs. Its engine and version are still unknown; the schema and this code are written for both MySQL 8.0.16+ and MariaDB 10.4+.
 
 ## Scope
 
@@ -37,37 +37,36 @@ Where this section and the documents disagree, this section wins. Task 14 brings
 
 ## Prerequisites (human, once, before Task 1)
 
-An agent cannot do these: the database installer asks for administrator rights, and the database password must never pass through an agent.
+No database is installed on the development machine. Development and tests use databases at TransIP. An agent cannot do these steps: they need the TransIP control panel, and a database password must never pass through an agent.
 
-1. Install MariaDB: `winget install MariaDB.Server`
-2. Open a database prompt as root (`"C:\Program Files\MariaDB <version>\bin\mariadb.exe" -u root -p`; press Enter if the installer set no root password) and run, with a password of your own choice:
-
-   ```sql
-   CREATE DATABASE laundry      CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-   CREATE DATABASE laundry_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-   CREATE USER 'laundry'@'localhost' IDENTIFIED BY 'CHOOSE-A-PASSWORD';
-   GRANT ALL ON laundry.*      TO 'laundry'@'localhost';
-   GRANT ALL ON laundry_test.* TO 'laundry'@'localhost';
-   ```
-
-3. Create the file `site/.env` (create the `site` folder if it is not there yet). Put the password in double quotes:
+1. In the TransIP control panel create **two** databases: one for the real data and one for the tests.
+   The tests drop every table of their database at the start of every run. They must never share a database with real data.
+2. Switch on external access for the **test** database, so the tests can reach it from the development machine. Leave the real database reachable from the hosting only.
+3. On the development machine create the file `site/.env.test` (create the `site` folder if it is not there yet) with the details of the **test** database. Put the password in double quotes:
 
    ```ini
-   DB_HOST=127.0.0.1
-   DB_NAME=laundry
-   DB_USER=laundry
-   DB_PASS="CHOOSE-A-PASSWORD"
+   DB_HOST=the host name TransIP shows for the test database
+   DB_NAME=the name of the test database
+   DB_USER=the user of the test database
+   DB_PASS="THE-PASSWORD"
    APP_ENV=local
    SCANNER_SIMULATOR=true
    ```
 
-The tests always use `laundry_test` and wipe it on every run. They refuse to start on a database whose name does not end in `_test`.
+4. The file `site/.env`, with the details of the real database, is made on the server when the site is uploaded. It is not needed on the development machine.
+
+Two things to confirm in the control panel before Task 1. If either is not possible, stop and say so: the tests then have no safe place to run, and the plan needs another answer first.
+
+- The hosting package allows a second database.
+- A database can be reached from outside the hosting.
+
+The tests read only `site/.env.test`. They refuse to start when that file is missing, or when it names the same database as `site/.env`. Because the test database is far away, a full test run takes minutes, not seconds.
 
 ## Global Constraints
 
 - **PHP 8.3+**, `declare(strict_types=1);` in every PHP file. No runtime Composer package. PHPUnit `^11.5` is the only dev dependency.
 - **Database:** MySQL 8.0.16+ or MariaDB 10.4+. `db/schema.sql` and `db/seed.sql` are fixed. If a task seems to need a schema change, stop and report it; do not edit the schema. (Task 14 changes two comment lines in `db/schema.sql`, nothing else.)
-- **Folders:** `site/` is exactly what gets uploaded to TransIP. `site/www/` is the web root. `site/app/`, `site/bin/`, `site/storage/` and `site/.env` are outside the web root. Tests, `composer.json` and `vendor/` live at the repository root and are never uploaded.
+- **Folders:** `site/` is exactly what gets uploaded to TransIP. `site/www/` is the web root. `site/app/`, `site/bin/`, `site/storage/`, `site/.env` and `site/.env.test` are outside the web root. Tests, `composer.json` and `vendor/` live at the repository root and are never uploaded.
 - **SQL:** every query goes through `q($sql, $params)` with `?` placeholders. Only constants written in the code may be put into SQL text. No value from a request is ever pasted into a query.
 - **Status changes:** always `UPDATE items SET status = <new> ... WHERE id = ? AND status = <old>`, inside `tx()`, followed by one `log_event()` row. A second scan of the same mat must change nothing and write no second event.
 - **Roles:** exactly `office`, `inventory`, `driver`, `washing`, `outbound`.
@@ -78,11 +77,12 @@ The tests always use `laundry_test` and wipe it on every run. They refuse to sta
 - **Tag ids** (EPC, TID) are stored and compared as uppercase hex, 8 to 64 characters.
 - **Nothing is hard-deleted.** The one exception is the lines of a contract that is still a draft.
 - **Every source file starts with a one-line doc comment** saying what the file is for.
-- **Secrets:** the database password lives only in `site/.env`, which is never committed, printed or logged.
+- **Secrets:** database passwords live only in `site/.env` (real database, on the server) and `site/.env.test` (test database, on the development machine). Neither file is ever committed, printed or logged.
+- **No local database.** Nothing in this plan installs or starts a database server. Every test and every manual check runs against the TransIP test database named in `site/.env.test`. Never point a test or a manual check at the real database.
 - **Stay in the backend lane:** no React, no `site/www/index.html`, no schema edits.
 - **Branch:** all work happens on `feat/backend-api`. Never commit on `main`.
 - **Versions and commits:** every task is one commit and bumps the patch version. The commit step of each task gives the exact version and message. Commit messages follow the repository style: one sentence ending in `at <version>.` **Never add a `Co-Authored-By` line, a "Generated with" line, or any other AI attribution** to a commit, tag, pull request or file. This overrides any tool default.
-- **Run the tests** with `php vendor/bin/phpunit` from the repository root. All commands in this plan are for Git Bash.
+- **Run the tests** with `php vendor/bin/phpunit` from the repository root. A run talks to a database at TransIP, so it takes minutes; run one test file while working on a task and the whole suite before a commit. All commands in this plan are for Git Bash.
 
 ## Review Focus
 
@@ -111,7 +111,7 @@ To confirm at review. Each one is small; Task 14 writes the accepted ones into A
 | 9 | Closing a stop needs `signed_name` | A signature without a name proves little |
 | 10 | A collection task accepts no drops. A delivery task expects no pick-ups | Follows from what the task types mean |
 | 11 | Passwords have 10 to 72 characters. An office user cannot switch off or demote himself | Nobody may lock the last office user out |
-| 12 | Optional setting `STORAGE_DIR` | Lets the tests write proofs and throttle files to a temp folder |
+| 12 | Optional setting `STORAGE_DIR`, and the environment variable `ENV_FILE` that picks another settings file in `site/` | Lets the tests write proofs and throttle files to a temp folder, and use their own database through `site/.env.test` |
 | 13 | Ending a contract sets the end date to today, or to the start date when today is earlier | The database refuses an end date before the start date |
 | 14 | Opening a handover that is already open between the same two people returns the open one | A retry on a bad connection must not create a second handover |
 | 15 | Photo at most 5 MB, signature at most 1 MB. `site/www/.user.ini` raises PHP's upload limit to 6 MB | The spec says "a size limit" without a number |
@@ -120,7 +120,7 @@ To confirm at review. Each one is small; Task 14 writes the accepted ones into A
 
 ```
 composer.json                 dev dependency (PHPUnit) and the project version
-phpunit.xml                   test settings: forces DB_NAME=laundry_test
+phpunit.xml                   test settings
 .gitignore
 site/
   .env.example                the six settings, without a password
@@ -145,7 +145,7 @@ site/
     .htaccess                 HTTPS, /api/* to index.php
     .user.ini                 upload limits
 tests/
-  bootstrap.php               rebuilds laundry_test from db/schema.sql
+  bootstrap.php               picks site/.env.test, rebuilds the test database from db/schema.sql
   ApiTestCase.php             fresh mock data per test, in-process API calls
   *Test.php                   one file per task
 ```
@@ -164,9 +164,9 @@ One file per subject, functions only, no classes beyond the three small value cl
 - Modify: `README.md:16` (version badge)
 
 **Interfaces:**
-- Consumes: `db/schema.sql`, `db/seed.sql`, `site/.env` (made by the human, see Prerequisites).
+- Consumes: `db/schema.sql`, `db/seed.sql`, `site/.env.test` (made by the human, see Prerequisites).
 - Produces:
-  - `cfg(string $key, ?string $default = null): ?string`
+  - `cfg(string $key, ?string $default = null): ?string` — the process environment wins, then the settings file (`site/.env`, or the file in `site/` that the environment variable `ENV_FILE` names), then the default
   - `storage_dir(): string`
   - `db(): PDO`
   - `q(string $sql, array $params = []): PDOStatement` — positional `?` only; binds int as int, null as null
@@ -181,11 +181,11 @@ One file per subject, functions only, no classes beyond the three small value cl
 Run:
 
 ```bash
-test -f site/.env && echo "env ok" || echo "site/.env missing"
-php -r '$c = parse_ini_file("site/.env", false, INI_SCANNER_RAW); new PDO("mysql:host={$c["DB_HOST"]};dbname=laundry_test", $c["DB_USER"], $c["DB_PASS"]); echo "database ok", PHP_EOL;'
+test -f site/.env.test && echo "env ok" || echo "site/.env.test missing"
+php -r '$c = parse_ini_file("site/.env.test", false, INI_SCANNER_RAW); $p = new PDO("mysql:host={$c["DB_HOST"]};dbname={$c["DB_NAME"]}", $c["DB_USER"], $c["DB_PASS"]); echo "database ok: ", $p->query("SELECT VERSION()")->fetchColumn(), PHP_EOL;'
 ```
 
-Expected: `env ok` and `database ok`. If either fails, stop and report BLOCKED with the exact output: the Prerequisites section is not done. Do not print the content of `site/.env`.
+Expected: `env ok` and `database ok:` followed by the version of the TransIP database. Write that version into the task report: it answers the open question in ARCHITECTURE.md. If either check fails, stop and report BLOCKED with the exact output: the Prerequisites section is not done, or external access is off. Do not print the content of `site/.env.test`, and do not try to install a database locally instead.
 
 - [ ] **Step 2: Install Composer locally and PHPUnit**
 
@@ -217,6 +217,7 @@ Create `.gitignore`:
 /composer.phar
 /.phpunit.cache/
 /site/.env
+/site/.env.test
 /site/storage/
 /.superpowers/
 ```
@@ -248,7 +249,6 @@ Create `phpunit.xml`:
     </testsuites>
     <php>
         <env name="APP_ENV" value="test" force="true"/>
-        <env name="DB_NAME" value="laundry_test" force="true"/>
     </php>
 </phpunit>
 ```
@@ -257,13 +257,22 @@ Create `tests/bootstrap.php`:
 
 ```php
 <?php
-/** Test start-up: rebuilds the test database from db/schema.sql and points storage at a temp folder. */
+/** Test start-up: picks the test database of site/.env.test, rebuilds it from db/schema.sql, points storage at a temp folder. */
 declare(strict_types=1);
 
+// The tests drop every table. They only ever read site/.env.test, never site/.env.
+putenv('ENV_FILE=.env.test');
 require __DIR__ . '/../site/app/bootstrap.php';
 
-if (!str_ends_with((string) cfg('DB_NAME'), '_test')) {
-    fwrite(STDERR, "Refusing to run: DB_NAME must end in _test, because the tests wipe the database.\n");
+$testFile = __DIR__ . '/../site/.env.test';
+$realFile = __DIR__ . '/../site/.env';
+if (!is_file($testFile) || (string) cfg('DB_NAME') === '') {
+    fwrite(STDERR, "Refusing to run: site/.env.test with the test database is missing.\n");
+    exit(1);
+}
+$real = is_file($realFile) ? (parse_ini_file($realFile, false, INI_SCANNER_RAW) ?: []) : [];
+if (($real['DB_NAME'] ?? null) === cfg('DB_NAME') && ($real['DB_HOST'] ?? '127.0.0.1') === cfg('DB_HOST', '127.0.0.1')) {
+    fwrite(STDERR, "Refusing to run: site/.env.test names the same database as site/.env, and the tests wipe it.\n");
     exit(1);
 }
 
@@ -486,10 +495,13 @@ Expected: FAIL at start-up with `Failed opening required '.../site/app/bootstrap
 Create `site/.env.example`:
 
 ```ini
-; Copy to site/.env and fill in. Never commit site/.env.
-DB_HOST=127.0.0.1
-DB_NAME=laundry
-DB_USER=laundry
+; Two copies of this file, never committed:
+;   site/.env       on the server, with the real database
+;   site/.env.test  on the development machine, with the test database. The tests wipe that database.
+; Host, name and user come from the TransIP control panel.
+DB_HOST=
+DB_NAME=
+DB_USER=
 DB_PASS=""
 ; local or production
 APP_ENV=local
@@ -506,7 +518,11 @@ Create `site/app/bootstrap.php`:
 /** Loads the settings and every backend file. Required first by www/index.php, the bin scripts and the tests. */
 declare(strict_types=1);
 
-/** One setting. The process environment wins, then site/.env, then the default. */
+/**
+ * One setting. The process environment wins, then the settings file, then the default.
+ * The settings file is site/.env. The environment variable ENV_FILE picks another file in site/,
+ * which is how the tests use their own database (site/.env.test).
+ */
 function cfg(string $key, ?string $default = null): ?string
 {
     static $file = null;
@@ -514,7 +530,7 @@ function cfg(string $key, ?string $default = null): ?string
     if ($env !== false) {
         return $env;
     }
-    $path = __DIR__ . '/../.env';
+    $path = __DIR__ . '/../' . basename(getenv('ENV_FILE') ?: '.env');
     $file ??= is_file($path) ? parse_ini_file($path, false, INI_SCANNER_RAW) : [];
     return $file[$key] ?? $default;
 }
@@ -1633,8 +1649,8 @@ final class UsersTest extends ApiTestCase
 
     public function test_the_command_creates_the_first_office_user(): void
     {
-        // The child process gets DB_NAME explicitly, so it can never touch the real database.
-        $env = ['DB_NAME' => cfg('DB_NAME'), 'APP_ENV' => 'test'] + getenv();
+        // The child process is told explicitly to use the test settings, so it can never touch the real database.
+        $env = ['ENV_FILE' => '.env.test', 'APP_ENV' => 'test'] + getenv();
         $process = proc_open([PHP_BINARY, __DIR__ . '/../site/bin/create-office-user.php'],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
         fwrite($pipes[0], "First Office\nfirst.office\nlong-password-1\n");
@@ -1803,18 +1819,18 @@ Expected: `OK (8 tests, ...)`.
 
 - [ ] **Step 5: Check the web entry point by hand**
 
-This is the first moment a real HTTP login is possible. It runs against the test database.
+This is the first moment a real HTTP login is possible. It runs against the test database: `ENV_FILE=.env.test` makes the server and the command read `site/.env.test`.
 
 Start the server in the background (in the Bash tool: `run_in_background: true`):
 
 ```bash
-DB_NAME=laundry_test php -S 127.0.0.1:8080 site/www/index.php
+ENV_FILE=.env.test php -S 127.0.0.1:8080 site/www/index.php
 ```
 
 Then run:
 
 ```bash
-printf 'Smoke Office\nsmoke\nsmoke-password-1\n' | DB_NAME=laundry_test php site/bin/create-office-user.php
+printf 'Smoke Office\nsmoke\nsmoke-password-1\n' | ENV_FILE=.env.test php site/bin/create-office-user.php
 JAR=$(mktemp)
 curl -s -i -c "$JAR" -H 'Content-Type: application/json' \
   -d '{"username":"smoke","password":"smoke-password-1"}' http://127.0.0.1:8080/api/v1/auth/login
@@ -5098,7 +5114,7 @@ Anything else that puts a variable into SQL text is a finding: replace it with a
 Run:
 
 ```bash
-git ls-files | grep -E '(^|/)\.env$|^site/storage/|composer\.phar|^vendor/' ; echo "tracked-files check done"
+git ls-files | grep -E '(^|/)\.env(\.test)?$|^site/storage/|composer\.phar|^vendor/' ; echo "tracked-files check done"
 git grep -nE 'DB_PASS' -- site tests | grep -v "cfg('DB_PASS')" | grep -v '.env.example' ; echo "password check done"
 ls site/www
 ```
@@ -5110,13 +5126,13 @@ Expected: the first two commands print only their `done` line. `ls site/www` sho
 Start the server in the background (`run_in_background: true`):
 
 ```bash
-DB_NAME=laundry_test APP_ENV=production php -S 127.0.0.1:8080 site/www/index.php
+ENV_FILE=.env.test APP_ENV=production php -S 127.0.0.1:8080 site/www/index.php
 ```
 
 Run:
 
 ```bash
-printf 'Sec Office\nsec.office\nsec-password-12\n' | DB_NAME=laundry_test php site/bin/create-office-user.php
+printf 'Sec Office\nsec.office\nsec-password-12\n' | ENV_FILE=.env.test php site/bin/create-office-user.php
 curl -s -i -H 'Content-Type: application/json' -d '{"username":"sec.office","password":"sec-password-12"}' http://127.0.0.1:8080/api/v1/auth/login | grep -iE '^(HTTP|set-cookie|x-content-type-options|cache-control|strict-transport-security)'
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/app/db.php
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/.env
@@ -5153,7 +5169,7 @@ For each line, confirm the place in the code and the test. Write the table, with
 | Ownership checked on the server | `tasks_complete()`, `handovers_scan()`, `handovers_get()`, `handovers_close()`, `items_list()` | `TaskCompleteTest::test_only_the_assigned_driver_closes_a_stop_and_only_once`, `HandoverScanTest::test_only_the_two_people_of_a_handover_may_scan_into_it`, `ItemsTest::test_each_role_sees_only_its_own_mats` |
 | All SQL uses prepared statements | `q()` | Step 3, `SecurityTest::test_sql_in_a_login_or_a_search_stays_text` |
 | Uploads checked by content, size limit, server-made name, outside the web root, served only to the office | `proof_in()`, `tasks_complete()`, `tasks_proof()` | `TaskCompleteTest` (three proof tests), `SecurityTest::test_a_tampered_proof_path_cannot_leave_the_proofs_folder` |
-| Secrets in `.env`, never in git | `.gitignore`, `cfg()` | Step 4 |
+| Secrets in `.env` and `.env.test`, never in git | `.gitignore`, `cfg()` | Step 4 |
 | Simulator off in production use | `simulator_on()`, `sim_items()`, `source_in()` | `ScanTest::test_switching_the_simulator_off_closes_its_list_and_refuses_its_scans` |
 | Corrections leave a trace | `items_correct()` | `ItemsTest::test_a_correction_moves_the_mat_and_leaves_a_trace` |
 | A lookup does not show the customer | `item_view()` | `ScanTest::test_lookup_tells_what_each_mat_is_and_changes_nothing` |
@@ -5251,6 +5267,12 @@ In the table under "Settings the backend reads from `.env`", add this row after 
 
 ```markdown
 | `STORAGE_DIR` | Optional. Folder for proof files, sessions and login throttle files. Default: `site/storage`. |
+```
+
+Directly under that table, add:
+
+```markdown
+There is no database on the development machine. The tests use a second database at TransIP, named in `site/.env.test`, and wipe it on every run. Starting PHP with the environment variable `ENV_FILE=.env.test` makes the backend read that file instead of `.env`. The test database is reachable from outside the hosting; the real one is not.
 ```
 
 In the section `### First login`, replace the paragraph with:
@@ -5484,20 +5506,20 @@ Add this section directly before `## Versions`:
 ````markdown
 ## Run the API locally
 
-Needs PHP 8.3+ and MariaDB or MySQL. Create two databases, `laundry` and `laundry_test`, and copy `site/.env.example` to `site/.env` with your database password.
+Needs PHP 8.3+ and a test database at TransIP that can be reached from outside the hosting. No database is installed locally. Copy `site/.env.example` to `site/.env.test` and fill in the details of the **test** database. The tests wipe that database on every run, so it must never be the real one.
 
 ```bash
-php composer.phar install          # PHPUnit, for the tests only
-php vendor/bin/phpunit             # runs against laundry_test and wipes it every time
-mysql -u USER -p laundry < db/schema.sql
-mysql -u USER -p laundry < db/seed.sql
-php site/bin/create-office-user.php
-php -S 127.0.0.1:8080 site/www/index.php
+php composer.phar install                                  # PHPUnit, for the tests only
+php vendor/bin/phpunit                                     # wipes and rebuilds the test database, then runs
+ENV_FILE=.env.test php site/bin/create-office-user.php     # a user to log in with
+ENV_FILE=.env.test php -S 127.0.0.1:8080 site/www/index.php
 ```
+
+The next test run wipes the test database, and that user with it.
 
 The API then answers at `http://127.0.0.1:8080/api/v1`. The endpoints are listed in [ARCHITECTURE.md](ARCHITECTURE.md#endpoints).
 
-To put it on the server, upload the `site` folder and point the web root at `site/www`.
+To put it on the server: upload the `site` folder, point the web root at `site/www`, create `site/.env` there with the details of the real database, load `db/schema.sql` and `db/seed.sql` through phpMyAdmin, and run `php site/bin/create-office-user.php` once.
 ````
 
 - [ ] **Step 5: Check the documents against the code**
@@ -5543,9 +5565,9 @@ Put these blocks in the final report, with the two "Open risks" lines completed 
 - Open risks:    <from the Task 12 and Task 13 reports>. The picture flow-0.1.6.png still shows the wash count at Handover B and must be rendered again.
 
 ### HANDOFF — testing
-- Produced:      tests/*.php, phpunit.xml. 167 tests, all against a real MariaDB.
-- Contract:      php vendor/bin/phpunit is green. It wipes the database named in DB_NAME, which must end in _test.
-- Assumptions:   MariaDB or MySQL is running locally with the laundry_test database.
+- Produced:      tests/*.php, phpunit.xml. 167 tests, all against the TransIP test database.
+- Contract:      php vendor/bin/phpunit is green. It reads only site/.env.test, wipes that database, and refuses to run when it is the database of site/.env.
+- Assumptions:   the TransIP test database exists and is reachable from the development machine.
 - Do NOT change: an assertion to make failing code pass.
 - Open risks:    no test runs two requests at the same moment; row locks and conditional updates are reasoned, not load-tested. index.php is checked by hand with curl, not by PHPUnit.
 
