@@ -1,51 +1,50 @@
 # Proposed flow
 
-Version: 0.1.5
+Version: 0.1.6
 
 Proposed mat lifecycle for the RFID laundry POC. Defaults that still need client confirmation are listed under the diagram.
 
-![Proposed flow](flow-0.1.5.png)
+![Proposed flow](flow-0.1.6.png)
 
 <details>
-<summary>Mermaid source for flow-0.1.5.png</summary>
+<summary>Mermaid source for flow-0.1.6.png</summary>
 
 ```mermaid
-flowchart TD
+flowchart LR
     SETUP["SETUP (webapp)<br/>Customer → Building → Floor/Zone<br/>mat type, qty, n days"]
 
-    subgraph INV[" "]
-        T1["1 INVENTORY"]:::phase ~~~ REG
+    subgraph INV["1 INVENTORY"]
+        direction TB
         REG["Register<br/>2 tags, same EPC, 2 TIDs<br/>primary + secondary"] --> READY["Ready to use"]
         READY --> QC{"QC"}
         QC -- pass --> OUT["Outbound"]
         QC -- fail --> FIX["Rewash (to 4)<br/>Repair<br/>Scrap"]:::side
     end
 
-    subgraph SITE[" "]
-        T2["2 SITE"]:::phase ~~~ DEL
+    subgraph SITE["2 SITE"]
+        direction TB
         DEL["Driver delivers<br/>scan list, photo, signature"] --> ATC["At customer<br/>D = today, due = D+n"]
         DEL -. "refused or<br/>undelivered" .-> REF["Back to 1<br/>Ready to use<br/>no wash"]:::side
     end
 
-    subgraph LOG[" "]
-        T3["3 LOGISTICS (reverse)"]:::phase ~~~ SWAP
+    subgraph LOG["3 LOGISTICS (reverse)"]
+        direction TB
         SWAP["Swap task<br/>drop clean, pick dirty<br/>scan list, photo, signature"] --> PICKED["Picked up"]
     end
 
-    subgraph WASH[" "]
-        T4["4 WASHING"]:::phase ~~~ INW
+    subgraph WASH["4 WASHING"]
+        direction TB
         INW["In washing<br/>previous date = old current date<br/>current date = today<br/>cycle +1"]
     end
 
     BACK(["Back to 1 INVENTORY<br/>Ready to use"])
 
     SETUP -- "creates<br/>delivery task" --> INV
-    OUT -- "Handover A<br/>inventory scans out<br/>driver scans in" --> DEL
-    ATC -- "D+n reached" --> SWAP
-    PICKED -- "Handover B<br/>driver scans out<br/>washing scans in" --> INW
-    INW -- "Handover C<br/>washing scans out<br/>inventory scans in (optional)" --> BACK
+    INV -- "Handover A<br/>inventory scans out<br/>driver scans in" --> SITE
+    SITE -- "D+n reached" --> LOG
+    LOG -- "Handover B<br/>driver scans out<br/>washing scans in" --> WASH
+    WASH -- "Handover C<br/>washing scans out<br/>inventory scans in<br/>(optional)" --> BACK
 
-    classDef phase fill:none,stroke:none,font-weight:bold,font-size:18px
     classDef side stroke-dasharray:4 3
 ```
 
