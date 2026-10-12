@@ -1,8 +1,28 @@
 # Laundry RFID POC
 
-Version: 0.3.1
+Version: 0.3.2
 
 RFID mat tracking for Proti. Proti rents door mats to its customers, delivers and collects them with its own drivers, and washes them in its own washing house. Every mat carries two RFID tags. This system follows each mat through inventory, delivery, the customer, collection and washing.
+
+## How it helps a laundry
+
+A rental laundry owns thousands of items that all look the same and are always on the move: on a shelf, in a van, at a customer, in a washing machine. Without tracking, nobody can say where one mat is, how often it has been washed, or who had it last. Proti has no software for this today.
+
+With an RFID tag in every mat, a handheld scanner reads a whole pile at once, without unfolding or counting by hand. This system turns those reads into answers.
+
+| Problem in a laundry | What the system does |
+|---|---|
+| Nobody knows where a mat is | Every mat has one current status and place: inventory, a named driver, a customer's zone, or washing |
+| Counting piles by hand is slow and wrong | One scan reads the whole pile and compares it with the list that was expected: found, missing, or not on the list |
+| Mats go missing between people | A mat changes hands only when both the giver and the receiver have scanned it. A mat scanned by one side stays with the giver and is flagged for the office |
+| Swaps are forgotten or late | The contract sets the days between swaps. When a delivery is done, the next swap task is created with its due date |
+| A customer says "we never got them" | Every delivery, swap and collection is closed with a scan, a photo and a signature |
+| Nobody knows how worn a mat is | Each mat keeps its wash count and its last two wash dates. The count goes up once per wash, even if the pile is scanned twice |
+| A dirty or damaged mat goes out to a customer | A mat must pass a quality check before it can be handed to a driver. A failed mat goes to rewash, repair or scrap |
+| Mistakes cannot be traced | Every scan is kept in the mat's history: who, when, where, and what changed |
+| The office works from memory and paper | One web app holds customers, buildings, contracts, mats, tasks and users |
+
+It is built for growth: 40 to 50 mats now, 4,000 to 5,000 in a few years, and rented workwear later on the same platform.
 
 ## Status
 
