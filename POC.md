@@ -1,10 +1,10 @@
 # Laundry RFID POC
 
-Version: 0.2.1
+Version: 0.3.0
 
 Proti rents door mats to its customers. Proti owns the mats, delivers and collects them itself, and washes them itself. One mat carries two RFID tags with the same EPC. The Chainway C72 only returns tag ids. The apps store everything else: SKU, status, customer location, washing dates, and washing cycle count.
 
-The flow is drawn in [FLOW.md](FLOW.md). The full feature list is in [FEATURES.md](FEATURES.md).
+The flow is drawn in [FLOW.md](FLOW.md). The full feature list is in [FEATURES.md](FEATURES.md). The system design and database are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Apps
 
