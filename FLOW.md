@@ -1,8 +1,13 @@
 # Proposed flow
 
-Version: 0.1.1
+Version: 0.1.2
 
 Proposed mat lifecycle for the RFID laundry POC. Defaults that still need client confirmation are listed under the diagram.
+
+![Proposed flow](flow.png)
+
+<details>
+<summary>Mermaid source for flow.png</summary>
 
 ```mermaid
 flowchart TD
@@ -39,6 +44,8 @@ flowchart TD
     FIX -. "rewash" .-> INW
     DEL -. "refused or undelivered, no wash" .-> READY
 ```
+
+</details>
 
 ## Rules the diagram does not show
 
