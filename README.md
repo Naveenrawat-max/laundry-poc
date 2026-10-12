@@ -13,7 +13,7 @@
 
 RFID mat tracking for Proti, a company that rents, delivers, collects and washes door mats.
 
-![Version](https://img.shields.io/badge/version-0.3.4-2563eb?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.3.5-2563eb?style=flat-square)
 ![Stage](https://img.shields.io/badge/stage-design-f59e0b?style=flat-square)
 ![Handheld](https://img.shields.io/badge/handheld-simulated-8b5cf6?style=flat-square)
 ![Data](https://img.shields.io/badge/data-mock%20mats-64748b?style=flat-square)
@@ -243,6 +243,7 @@ The full table of who sees what is in [ARCHITECTURE.md](ARCHITECTURE.md#users-an
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design: hosting, roles, data model, API, scanner simulator, security |
 | [db/schema.sql](db/schema.sql) | Database schema, 13 tables |
 | [db/seed.sql](db/seed.sql) | Mock data: 40 mats, 2 customers, 2 draft contracts |
+| [docs/superpowers/plans/2026-10-12-backend-api.md](docs/superpowers/plans/2026-10-12-backend-api.md) | Implementation plan for the backend API, plan 1 of 3 |
 
 Start with POC.md, then ARCHITECTURE.md.
 
