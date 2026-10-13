@@ -33,4 +33,11 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     Route::post('/users', [C\UserController::class, 'store'])->middleware('role:office');
     Route::patch('/users/{id}', [C\UserController::class, 'update'])->middleware('role:office');
 
+
+    Route::get('/contracts', [C\ContractController::class, 'index'])->middleware('role:office');
+    Route::post('/contracts', [C\ContractController::class, 'store'])->middleware('role:office');
+    Route::patch('/contracts/{id}', [C\ContractController::class, 'update'])->middleware('role:office');
+    Route::post('/contracts/{id}/activate', [C\ContractController::class, 'activate'])->middleware('role:office');
+    Route::post('/contracts/{id}/end', [C\ContractController::class, 'end'])->middleware('role:office');
+
 });
