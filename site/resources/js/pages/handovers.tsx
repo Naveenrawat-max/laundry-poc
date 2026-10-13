@@ -189,78 +189,80 @@ function HandoverDrawer({ id, onClose, onChanged }: { id: number | null; onClose
   const oneSided = h?.items.filter((i) => !i.given_at || (!i.received_at && h.type !== 'washing_to_inventory')).length ?? 0
 
   return (
-    <Drawer open={id !== null} onOpenChange={(open) => !open && onClose()}>
-      <DrawerContent title={h ? HANDOVER[h.type].name : 'Handover'} description={h ? `${h.giver.name} to ${h.receiver.name}. Opened ${when(h.created_at)}.` : undefined} className="w-[min(30rem,95vw)]">
-        {state.error && <Alert tone="danger">{state.error}</Alert>}
-        {h && (
-          <>
-            <div className="flex items-center justify-between gap-3">
-              {h.status === 'open' ? <Chip tone="success">Open</Chip> : <Chip>Closed {when(h.closed_at)}</Chip>}
-              {h.status === 'open' && (
-                <Button size="sm" onClick={() => setClosing(true)}>
-                  Close handover
-                </Button>
-              )}
-            </div>
-            {h.items.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Nobody has scanned a mat into this handover yet.</p>
-            ) : (
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="text-[11px] tracking-wide text-muted-foreground uppercase">
-                    <th className="py-1.5 font-medium">Mat</th>
-                    <th className="py-1.5 font-medium">Given</th>
-                    <th className="py-1.5 font-medium">Received</th>
-                    <th className="py-1.5 font-medium">Now</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {h.items.map((item) => (
-                    <tr key={item.id} className="border-t border-border">
-                      <td className="py-2 font-mono text-xs">{item.sku}</td>
-                      <td className="py-2">
-                        <Tick at={item.given_at} />
-                      </td>
-                      <td className="py-2">
-                        <Tick at={item.received_at} />
-                      </td>
-                      <td className="py-2">
-                        <StatusChip status={item.status} />
-                      </td>
+    <>
+      <Drawer open={id !== null && !closing} onOpenChange={(open) => !open && onClose()}>
+        <DrawerContent title={h ? HANDOVER[h.type].name : 'Handover'} description={h ? `${h.giver.name} to ${h.receiver.name}. Opened ${when(h.created_at)}.` : undefined} className="w-[min(30rem,95vw)]">
+          {state.error && <Alert tone="danger">{state.error}</Alert>}
+          {h && (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                {h.status === 'open' ? <Chip tone="success">Open</Chip> : <Chip>Closed {when(h.closed_at)}</Chip>}
+                {h.status === 'open' && (
+                  <Button size="sm" onClick={() => setClosing(true)}>
+                    Close handover
+                  </Button>
+                )}
+              </div>
+              {h.items.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Nobody has scanned a mat into this handover yet.</p>
+              ) : (
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="text-[11px] tracking-wide text-muted-foreground uppercase">
+                      <th className="py-1.5 font-medium">Mat</th>
+                      <th className="py-1.5 font-medium">Given</th>
+                      <th className="py-1.5 font-medium">Received</th>
+                      <th className="py-1.5 font-medium">Now</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-
-            <ConfirmDialog
-              open={closing}
-              tone="neutral"
-              title="Close this handover?"
-              confirmLabel="Close handover"
-              busyLabel="Closing"
-              cancelLabel="Leave it open"
-              busy={act.busy}
-              error={act.error}
-              onConfirm={() =>
-                void act.run(async () => {
-                  await api.post(`/handovers/${h.id}/close`)
-                  setClosing(false)
-                  await state.reload()
-                  onChanged()
-                })
-              }
-              onCancel={() => {
-                setClosing(false)
-                act.clear()
-              }}
-            >
-              Normally the receiver closes it on the handheld. After closing, nobody can scan into it any more
-              {oneSided > 0 ? `, and the ${oneSided} ${oneSided === 1 ? 'mat' : 'mats'} with only one scan become issues for you to handle.` : '.'}
-            </ConfirmDialog>
-          </>
-        )}
-      </DrawerContent>
-    </Drawer>
+                  </thead>
+                  <tbody>
+                    {h.items.map((item) => (
+                      <tr key={item.id} className="border-t border-border">
+                        <td className="py-2 font-mono text-xs">{item.sku}</td>
+                        <td className="py-2">
+                          <Tick at={item.given_at} />
+                        </td>
+                        <td className="py-2">
+                          <Tick at={item.received_at} />
+                        </td>
+                        <td className="py-2">
+                          <StatusChip status={item.status} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </DrawerContent>
+      </Drawer>
+      {/* Outside the drawer, and the drawer steps aside while this is open: a drawer keeps the pointer and the keyboard to itself. */}
+      <ConfirmDialog
+        open={closing && h != null}
+        tone="neutral"
+        title="Close this handover?"
+        confirmLabel="Close handover"
+        busyLabel="Closing"
+        cancelLabel="Leave it open"
+        busy={act.busy}
+        error={act.error}
+        onConfirm={() =>
+          void act.run(async () => {
+            await api.post(`/handovers/${h!.id}/close`)
+            setClosing(false)
+            await state.reload()
+            onChanged()
+          })
+        }
+        onCancel={() => {
+          setClosing(false)
+          act.clear()
+        }}
+      >
+        Normally the receiver closes it on the handheld. After closing, nobody can scan into it any more
+        {oneSided > 0 ? `, and the ${oneSided} ${oneSided === 1 ? 'mat' : 'mats'} with only one scan become issues for you to handle.` : '.'}
+      </ConfirmDialog>
+    </>
   )
 }

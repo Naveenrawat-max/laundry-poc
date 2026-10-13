@@ -44,7 +44,12 @@ export function TasksPage() {
   const act = useAction()
   const now = today()
 
+  // The driver just picked for a task, shown until the refreshed list is on screen. Without it the
+  // dropdown would jump back to the old driver for as long as the server takes to answer.
+  const [picked, setPicked] = useState<Record<number, string>>({})
+
   const assign = async (task: Task, driverId: string) => {
+    setPicked((p) => ({ ...p, [task.id]: driverId }))
     try {
       await api.patch(`/tasks/${task.id}`, { assigned_to: driverId ? Number(driverId) : null })
       toast(driverId ? 'Driver assigned.' : 'Task taken back from the driver.', { tone: 'success' })
@@ -52,6 +57,7 @@ export function TasksPage() {
       toast(message(e), { tone: 'danger' })
     }
     await tasks.reload()
+    setPicked(({ [task.id]: _shown, ...rest }) => rest)
   }
 
   const close = () => {
@@ -125,7 +131,7 @@ export function TasksPage() {
                     </TableCell>
                     <TableCell>
                       {t.status === 'open' ? (
-                        <Select aria-label={`Driver for ${t.building_name}`} value={t.assigned_to ?? ''} onChange={(e) => void assign(t, e.target.value)}>
+                        <Select aria-label={`Driver for ${t.building_name}`} value={picked[t.id] ?? t.assigned_to ?? ''} onChange={(e) => void assign(t, e.target.value)}>
                           <option value="">No driver yet</option>
                           {drivers.data?.map((d) => (
                             <option key={d.id} value={d.id}>

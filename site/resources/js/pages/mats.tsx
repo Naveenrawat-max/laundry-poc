@@ -144,65 +144,67 @@ function MatDrawer({ id, onClose, onChanged }: { id: number | null; onClose: () 
   const mat = state.data?.item
 
   return (
-    <Drawer open={id !== null} onOpenChange={(open) => !open && onClose()}>
-      <DrawerContent title={mat?.sku ?? 'Mat'} description={mat ? `${mat.type}. ${where(mat)}.` : undefined} className="w-[min(30rem,95vw)]">
-        {state.error && <Alert tone="danger">{state.error}</Alert>}
-        {mat && state.data && (
-          <>
-            <div className="flex items-center justify-between gap-3">
-              <StatusChip status={mat.status} />
-              <Button size="sm" onClick={() => setCorrecting(true)}>
-                Correct status
-              </Button>
-            </div>
-            <dl className="grid grid-cols-2 gap-3">
-              <Fact label="Washes">{String(mat.wash_count)}</Fact>
-              <Fact label="Last wash">{day(mat.current_wash_date)}</Fact>
-              <Fact label="Wash before that">{day(mat.previous_wash_date)}</Fact>
-              <Fact label="Tag id (EPC)">
-                <span className="font-mono text-xs">{mat.epc}</span>
-              </Fact>
-              <Fact label="First tag (TID)">
-                <span className="font-mono text-xs">{mat.tid_primary}</span>
-              </Fact>
-              <Fact label="Second tag (TID)">
-                <span className="font-mono text-xs">{mat.tid_secondary}</span>
-              </Fact>
-            </dl>
+    <>
+      <Drawer open={id !== null && !correcting} onOpenChange={(open) => !open && onClose()}>
+        <DrawerContent title={mat?.sku ?? 'Mat'} description={mat ? `${mat.type}. ${where(mat)}.` : undefined} className="w-[min(30rem,95vw)]">
+          {state.error && <Alert tone="danger">{state.error}</Alert>}
+          {mat && state.data && (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <StatusChip status={mat.status} />
+                <Button size="sm" onClick={() => setCorrecting(true)}>
+                  Correct status
+                </Button>
+              </div>
+              <dl className="grid grid-cols-2 gap-3">
+                <Fact label="Washes">{String(mat.wash_count)}</Fact>
+                <Fact label="Last wash">{day(mat.current_wash_date)}</Fact>
+                <Fact label="Wash before that">{day(mat.previous_wash_date)}</Fact>
+                <Fact label="Tag id (EPC)">
+                  <span className="font-mono text-xs">{mat.epc}</span>
+                </Fact>
+                <Fact label="First tag (TID)">
+                  <span className="font-mono text-xs">{mat.tid_primary}</span>
+                </Fact>
+                <Fact label="Second tag (TID)">
+                  <span className="font-mono text-xs">{mat.tid_secondary}</span>
+                </Fact>
+              </dl>
 
-            <h3 className="mt-2 font-montserrat text-sm font-semibold">History</h3>
-            {state.data.events.length === 0 && <p className="text-sm text-muted-foreground">Nothing has happened to this mat yet.</p>}
-            <ol className="space-y-3 border-l border-border pl-4">
-              {[...state.data.events].reverse().map((e) => (
-                <li key={e.id} className="relative text-sm">
-                  <span className="absolute top-1.5 -left-[1.3rem] size-1.5 rounded-full bg-muted-foreground" aria-hidden="true" />
-                  <p className="font-medium">
-                    {EVENT[e.event_type] ?? e.event_type}
-                    {e.from_status !== e.to_status && <span className="font-normal text-muted-foreground">: {STATUS[e.to_status]}</span>}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {when(e.created_at)} by {e.user_name}
-                    {e.zone_name ? `, ${e.zone_name}` : ''}
-                    {e.source === 'simulator' ? ', simulated scan' : ''}
-                  </p>
-                  {e.note && <p className="mt-0.5 text-xs">Note: {e.note}</p>}
-                </li>
-              ))}
-            </ol>
-
-            <CorrectDialog
-              mat={correcting ? mat : null}
-              onClose={() => setCorrecting(false)}
-              onDone={() => {
-                setCorrecting(false)
-                void state.reload()
-                onChanged()
-              }}
-            />
-          </>
-        )}
-      </DrawerContent>
-    </Drawer>
+              <h3 className="mt-2 font-montserrat text-sm font-semibold">History</h3>
+              {state.data.events.length === 0 && <p className="text-sm text-muted-foreground">Nothing has happened to this mat yet.</p>}
+              <ol className="space-y-3 border-l border-border pl-4">
+                {[...state.data.events].reverse().map((e) => (
+                  <li key={e.id} className="relative text-sm">
+                    <span className="absolute top-1.5 -left-[1.3rem] size-1.5 rounded-full bg-muted-foreground" aria-hidden="true" />
+                    <p className="font-medium">
+                      {EVENT[e.event_type] ?? e.event_type}
+                      {e.from_status !== e.to_status && <span className="font-normal text-muted-foreground">: {STATUS[e.to_status]}</span>}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {when(e.created_at)} by {e.user_name}
+                      {e.zone_name ? `, ${e.zone_name}` : ''}
+                      {e.source === 'simulator' ? ', simulated scan' : ''}
+                    </p>
+                    {e.note && <p className="mt-0.5 text-xs">Note: {e.note}</p>}
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+        </DrawerContent>
+      </Drawer>
+      {/* Outside the drawer, and the drawer steps aside while this is open: a drawer keeps the pointer and the keyboard to itself. */}
+      <CorrectDialog
+        mat={correcting ? (mat ?? null) : null}
+        onClose={() => setCorrecting(false)}
+        onDone={() => {
+          setCorrecting(false)
+          void state.reload()
+          onChanged()
+        }}
+      />
+    </>
   )
 }
 

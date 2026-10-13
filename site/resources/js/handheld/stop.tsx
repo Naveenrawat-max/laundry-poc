@@ -108,8 +108,8 @@ function SignaturePad({ onChange }: { onChange: (png: Blob | null) => void }) {
 /** The driver's open tasks, soonest first. Opening one starts the stop. */
 export function TasksScreen({ api, user }: Ctx) {
   const state = useLoad(() => api.get<{ tasks: Stop[] }>('/tasks').then((r) => r.tasks), [api], 8000)
-  const [openId, setOpenId] = useState<number | null>(null)
-  const open = state.data?.find((t) => t.id === openId)
+  // The stop itself and not its id: once it is closed it leaves the list, and the driver must still see that it went well.
+  const [open, setOpen] = useState<Stop | null>(null)
 
   if (open) {
     return (
@@ -118,7 +118,7 @@ export function TasksScreen({ api, user }: Ctx) {
         user={user}
         stop={open}
         onLeave={() => {
-          setOpenId(null)
+          setOpen(null)
           void state.reload()
         }}
       />
@@ -132,7 +132,7 @@ export function TasksScreen({ api, user }: Ctx) {
     <ul className="space-y-2">
       {state.data.map((t) => (
         <li key={t.id}>
-          <button type="button" onClick={() => setOpenId(t.id)} className="card-chai w-full cursor-pointer p-3 text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <button type="button" onClick={() => setOpen(t)} className="card-chai w-full cursor-pointer p-3 text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
             <span className="flex items-center justify-between gap-2">
               <span className="font-montserrat text-sm font-semibold">
                 {TASK_TYPE[t.type]}: {t.building_name}
