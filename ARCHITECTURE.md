@@ -85,7 +85,7 @@ One login per person, one role per login. The role is stored in `users.role`.
 | Contracts | Add and edit | No | No | No | No |
 | Users | Add, edit, switch off | No | No | No | No |
 | Mat list | All mats, search, filter | Mats in inventory | Mats he carries | Mats in washing | No list |
-| Mat history | Every event of every mat | No | No | No | No |
+| Mat history | Every event of every mat | No | No | Yes | No |
 | Look up one mat by scanning | No scanner | Yes | Yes | Yes | Yes |
 | Tasks | All, create, assign | How many mats each driver still needs | His own | No | How many mats each driver still needs |
 | Handovers | All, plus the issue list | His own | His own | His own | His own |
