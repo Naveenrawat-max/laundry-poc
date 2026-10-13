@@ -67,7 +67,7 @@ export function HandheldPage() {
 
       {/* Wide rows scroll inside this box, never the page. Every handheld stays mounted, so switching the view loses nothing. */}
       <div className="-mx-6 overflow-x-auto px-6 pb-4 sm:-mx-12 sm:px-12">
-        <div className={cn('flex w-max gap-6', mode === 'single' ? 'mx-auto' : 'min-[1500px]:mx-auto')}>
+        <div className="mx-auto flex w-max gap-6">
           {roles.map((role) => (
             <figure key={role} className={cn(mode === 'single' && role !== current && 'hidden')}>
               <figcaption className="mb-3 px-2">
