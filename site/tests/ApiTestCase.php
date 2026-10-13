@@ -119,4 +119,17 @@ abstract class ApiTestCase extends TestCase
         $this->loginAs($who);
         return $this->ok($this->api('POST', "/handovers/$handover/scan", $this->reads(...$mats)));
     }
+
+    /** Activates a seeded contract as the office and, if a driver is named, assigns its tasks to him. Returns the task ids. */
+    protected function activateContract(int $contractId, ?string $driver = null): array
+    {
+        $this->loginAs('office');
+        $taskIds = $this->ok($this->api('POST', "/contracts/$contractId/activate"))['task_ids'];
+        if ($driver !== null) {
+            foreach ($taskIds as $taskId) {
+                $this->ok($this->api('PATCH', "/tasks/$taskId", ['assigned_to' => $this->users[$driver]]));
+            }
+        }
+        return $taskIds;
+    }
 }
