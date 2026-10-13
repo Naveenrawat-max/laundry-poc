@@ -17,7 +17,7 @@ final class User extends Authenticatable
 
     public const ROLES = ['office', 'inventory', 'driver', 'washing', 'outbound'];
 
-    // bcrypt reads only the first 72 bytes, so a longer password would be silently cut.
+    // bcrypt accepts at most 72 bytes, not 72 Unicode characters.
     public const PASSWORD_RULE = 'string|min:10|max:72';
 
     /** The schema names the column password_hash. Laravel's login finds the hash through this name. */
@@ -28,6 +28,16 @@ final class User extends Authenticatable
 
     protected $casts = ['is_active' => 'boolean'];
 
+    /** Rejects inputs bcrypt cannot hash before registration or a password change. */
+    public static function passwordRules(): array
+    {
+        return [...explode('|', self::PASSWORD_RULE), function (string $attribute, mixed $value, \Closure $fail): void {
+            if (is_string($value) && (strlen($value) > 72 || str_contains($value, "\0"))) {
+                $fail('The password must be at most 72 bytes and contain no null bytes.');
+            }
+        }];
+    }
+
     /** Validates and stores a new user. Used by POST /users and by the command laundry:office-user. */
     public static function register(array $in): self
     {
@@ -37,7 +47,7 @@ final class User extends Authenticatable
         $data = Validator::make($in, [
             'name' => 'required|string|max:120',
             'username' => ['required', 'string', 'regex:/^[a-z0-9._-]{3,60}$/'],
-            'password' => 'required|' . self::PASSWORD_RULE,
+            'password' => ['required', ...self::passwordRules()],
             'role' => ['required', Rule::in(self::ROLES)],
         ], ['username.regex' => 'The username must be 3 to 60 letters, digits, dots, dashes or underscores.'])->validate();
 

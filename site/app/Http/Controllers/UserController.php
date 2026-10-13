@@ -32,7 +32,7 @@ final class UserController extends Controller
             'name' => 'sometimes|required|string|max:120',
             'role' => ['sometimes', 'required', Rule::in(User::ROLES)],
             'is_active' => 'sometimes|required|boolean',
-            'password' => 'sometimes|required|' . User::PASSWORD_RULE,
+            'password' => ['sometimes', 'required', ...User::passwordRules()],
         ]);
 
         $demoted = ($in['role'] ?? 'office') !== 'office' || !($in['is_active'] ?? true);

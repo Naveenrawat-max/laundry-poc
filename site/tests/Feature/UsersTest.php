@@ -24,6 +24,12 @@ final class UsersTest extends ApiTestCase
         $this->logout();
         $out = $this->ok($this->api('POST', '/auth/login', ['username' => 'dana.d', 'password' => 'long-password-1']));
         $this->assertSame('driver', $out['user']['role']);
+
+        $this->loginAs('office');
+        $password = str_repeat("\u{00E9}", 36);   // exactly 72 bytes
+        $this->ok($this->api('POST', '/users', $this->newUser(['username' => 'bytes.boundary', 'password' => $password])));
+        $this->logout();
+        $this->ok($this->api('POST', '/auth/login', ['username' => 'bytes.boundary', 'password' => $password]));
     }
 
     public function test_the_list_never_shows_a_password_hash(): void
@@ -39,6 +45,10 @@ final class UsersTest extends ApiTestCase
         $this->loginAs('office');
         $this->assertError(422, 'invalid_input', $this->api('POST', '/users', $this->newUser(['password' => 'short'])));
         $this->assertError(422, 'invalid_input', $this->api('POST', '/users', $this->newUser(['password' => str_repeat('a', 73)])));
+        foreach ([str_repeat("\u{00E9}", 37), "long-password-1\0"] as $password) {
+            $this->assertError(422, 'invalid_input', $this->api('POST', '/users', $this->newUser(['password' => $password])));
+            $this->assertError(422, 'invalid_input', $this->api('PATCH', "/users/{$this->users['driver']}", ['password' => $password]));
+        }
         $this->assertError(422, 'invalid_input', $this->api('POST', '/users', $this->newUser(['username' => 'has space'])));
         $this->assertError(422, 'invalid_input', $this->api('POST', '/users', $this->newUser(['role' => 'admin'])));
         $this->assertError(409, 'duplicate', $this->api('POST', '/users', $this->newUser(['username' => 'driver'])));
