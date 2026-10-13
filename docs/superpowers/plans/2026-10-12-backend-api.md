@@ -111,7 +111,7 @@ Because the test database is far away, a full test run takes a while. The tests 
 - **Roles:** exactly `office`, `inventory`, `driver`, `washing`, `outbound` (`User::ROLES`).
 - **Scan source:** `simulator` or `c72` from scanners. The server writes `web` for office actions. `simulator` is refused when `SCANNER_SIMULATOR` is not `true`.
 - **Errors:** always `{"error": {"code": "...", "message": "..."}}` with status `401` not logged in, `403` wrong role, not yours, or failed forgery check, `404` not found, `405` wrong method, `409` already done, closed, duplicate or wrong status, `422` input not valid, `429` too many login tries. Code stops a request with `fail($status, $code, $message)`.
-- **Dates:** `DATETIME` columns are UTC and set with `UTC_TIMESTAMP()`. The API sends them as they are stored (`2026-10-12 21:03:11`, UTC); turning them into Dutch time is the screen's job. `DATE` columns (`due_date`, wash dates, contract dates) are calendar days in Europe/Amsterdam and set with `today()`.
+- **Dates:** `DATETIME` columns are UTC and set with `UTC_TIMESTAMP()`. The API sends them as they are stored (`2026-10-12 21:03:11`, UTC); turning them into Dutch time is the screen's job. `DATE` columns (`due_date`, wash dates, contract dates) are calendar days in Europe/Amsterdam and set with `today_nl()`.
 - **Wash count:** goes up only in `HandoverController::move()` for `washing_to_inventory`, at the giver's scan. No other code touches `wash_count` or the wash dates.
 - **Tag ids** (EPC, TID) are stored and compared as uppercase hex, 8 to 64 characters.
 - **Nothing is hard-deleted.** The one exception is the lines of a contract that is still a draft.
@@ -174,7 +174,7 @@ site/                          the Laravel application (composer create-project)
   config/laundry.php           the simulator switch
   routes/api.php               every API route with the roles that may call it
   routes/console.php           the command laundry:office-user
-  app/helpers.php              rows(), row(), marks(), today(), days_after(), run_sql_file(), fail(), api_error()
+  app/helpers.php              rows(), row(), marks(), today_nl(), days_after(), run_sql_file(), fail(), api_error()
   app/Models/User.php          the user: roles, password column, what the API shows, register()
   app/Support/Scan.php         tag reads, mat lookups, the mat as a scanner sees it, history rows
   app/Http/Middleware/Role.php         active user and role check
@@ -220,7 +220,7 @@ One controller per subject. A controller method validates its input, runs its SQ
   - `rows(string $sql, array $params = []): array` — every row as an array; positional `?` only
   - `row(string $sql, array $params = []): ?array` — the first row, or null
   - `marks(array $xs): string` — `?,?,?` for an `IN (...)` list
-  - `today(): string` — `Y-m-d` in Europe/Amsterdam
+  - `today_nl(): string` — `Y-m-d` in Europe/Amsterdam
   - `days_after(string $date, int $days): string`
   - `run_sql_file(string $path): void`
   - `fail(int $status, string $code, string $message): never` — stops the request with the one error shape
@@ -575,7 +575,7 @@ final class DbTest extends ApiTestCase
     public function test_days_after_adds_calendar_days(): void
     {
         $this->assertSame('2026-11-02', days_after('2026-10-19', 14));
-        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}$/', today());
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2}$/', today_nl());
     }
 }
 ```
@@ -691,7 +691,7 @@ function marks(array $xs): string
 }
 
 /** Today as a calendar day in the Netherlands. DATE columns hold these, DATETIME columns hold UTC. */
-function today(): string
+function today_nl(): string
 {
     return (new DateTimeImmutable('now', new DateTimeZone('Europe/Amsterdam')))->format('Y-m-d');
 }
@@ -2704,7 +2704,7 @@ git commit -m "Add ready, quality check, correction, mat list and mat history at
 - Test: `site/tests/Feature/HandoverScanTest.php`
 
 **Interfaces:**
-- Consumes: `Scan::source()`, `Scan::reads()`, `Scan::itemsByEpc()`, `Scan::view()`, `Scan::log()`, `Scan::result()`, `Scan::ITEM_SELECT`, `rows()`, `row()`, `marks()`, `today()`, `DB::transaction()`, `$request->validate()`.
+- Consumes: `Scan::source()`, `Scan::reads()`, `Scan::itemsByEpc()`, `Scan::view()`, `Scan::log()`, `Scan::result()`, `Scan::ITEM_SELECT`, `rows()`, `row()`, `marks()`, `today_nl()`, `DB::transaction()`, `$request->validate()`.
 - Produces:
   - `HandoverController::TYPES` — per type: `giver` (list of roles), `receiver` (role), `from`, `to`, `two_sided`, `wash`
   - A handover in an answer is `id, type, status, created_at, closed_at, giver {id, name}, receiver {id, name}, items [mat as Scan::view() + given_at, received_at, resolved_at]`
@@ -2875,14 +2875,14 @@ final class HandoverScanTest extends ApiTestCase
 
         $give = $this->scanHandover('washing', $handover, 1, 2);
         $seen = $give['results'][0]['item'];
-        $this->assertSame(['ready', 4, today(), '2026-09-01'],
+        $this->assertSame(['ready', 4, today_nl(), '2026-09-01'],
             [$seen['status'], $seen['wash_count'], $seen['current_wash_date'], $seen['previous_wash_date']]);
         $this->scanHandover('washing', $handover, 1, 2);   // the same pile scanned again: no second wash
 
         $mat = $this->item(1);
-        $this->assertSame(['ready', 4, today(), '2026-09-01'],
+        $this->assertSame(['ready', 4, today_nl(), '2026-09-01'],
             [$mat['status'], $mat['wash_count'], $mat['current_wash_date'], $mat['previous_wash_date']]);
-        $this->assertSame([1, today(), null],
+        $this->assertSame([1, today_nl(), null],
             [$this->item(2)['wash_count'], $this->item(2)['current_wash_date'], $this->item(2)['previous_wash_date']]);
 
         // The inventory scan is optional and changes nothing.
@@ -2917,7 +2917,7 @@ final class HandoverScanTest extends ApiTestCase
         // Both scans are in, so the mat is free for the next handover even though nobody tapped Done yet.
         $back = $this->openHandover('washing', 'washing_to_inventory', 'inventory');
         $this->scanHandover('washing', $back, 1);
-        $this->assertSame(['ready', 1, today()],
+        $this->assertSame(['ready', 1, today_nl()],
             [$this->item(1)['status'], $this->item(1)['wash_count'], $this->item(1)['current_wash_date']]);
     }
 
@@ -3166,7 +3166,7 @@ final class HandoverController extends Controller
     {
         $rule = self::TYPES[$handover['type']];
         $holder = $rule['to'] === 'out_for_delivery' ? $handover['receiver_id'] : null;
-        $today = today();
+        $today = today_nl();
         // Keep this order: MySQL and MariaDB assign left to right, so previous_wash_date gets the old current date.
         $wash = $rule['wash'] ? ', previous_wash_date = current_wash_date, current_wash_date = ?, wash_count = wash_count + 1' : '';
         $params = [$rule['to'], $holder, ...($rule['wash'] ? [$today] : []), $item['id'], $rule['from']];
@@ -3541,7 +3541,7 @@ git commit -m "Add handover closing, lists, issues and receivers at 0.4.7."
 - Test: `site/tests/Feature/ContractsTest.php`
 
 **Interfaces:**
-- Consumes: `rows()`, `row()`, `today()`, `fail()`, `DB::transaction()`, `$request->validate()`.
+- Consumes: `rows()`, `row()`, `today_nl()`, `fail()`, `DB::transaction()`, `$request->validate()`.
 - Produces:
   - A contract in an answer is `id, customer_id, customer_name, swap_interval_days, status, start_date, end_date, lines [{id, zone_id, zone_name, building_id, building_name, item_type_id, type_name, quantity}]`
   - Routes, office only:
@@ -3676,7 +3676,7 @@ final class ContractsTest extends ApiTestCase
         DB::statement("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('swap', 1, 1, '2026-11-02')");
 
         $contract = $this->ok($this->api('POST', '/contracts/1/end'))['contract'];
-        $this->assertSame(['ended', max(today(), $contract['start_date'])], [$contract['status'], $contract['end_date']]);
+        $this->assertSame(['ended', max(today_nl(), $contract['start_date'])], [$contract['status'], $contract['end_date']]);
         $this->assertSame(['open', 'cancelled'], array_column($this->tasksOf(1), 'status'));   // delivery stays, swap is cancelled
 
         $this->assertError(409, 'not_active', $this->api('POST', '/contracts/1/end'));
@@ -3882,7 +3882,7 @@ final class ContractController extends Controller
             }
             // The database refuses an end date before the start date, so a contract ended early ends on its start date.
             DB::update("UPDATE contracts SET status = 'ended', end_date = ? WHERE id = ? AND status = 'active'",
-                [max(today(), $contract['start_date']), $id]);
+                [max(today_nl(), $contract['start_date']), $id]);
             DB::update("UPDATE tasks SET status = 'cancelled' WHERE contract_id = ? AND type = 'swap' AND status = 'open'", [$id]);
             return ['contract' => self::view($id)];
         });
@@ -4324,7 +4324,7 @@ git commit -m "Add task lists per role, assignment and collection tasks at 0.4.9
 - Test: `site/tests/Feature/TaskCompleteTest.php`
 
 **Interfaces:**
-- Consumes: `Scan::source()`, `Scan::hex()`, `Scan::itemsByEpc()`, `Scan::log()`, `TaskController::view()`, `today()`, `days_after()`, `rows()`, `row()`, `DB::transaction()`, Laravel's `Storage` disk `local` (the folder `site/storage/app/private`, outside the web root), and the test helper `activateContract()` from Task 10.
+- Consumes: `Scan::source()`, `Scan::hex()`, `Scan::itemsByEpc()`, `Scan::log()`, `TaskController::view()`, `today_nl()`, `days_after()`, `rows()`, `row()`, `DB::transaction()`, Laravel's `Storage` disk `local` (the folder `site/storage/app/private`, outside the web root), and the test helper `activateContract()` from Task 10.
 - Produces:
   - `POST /tasks/{id}/complete` (driver) — a form (`multipart/form-data`): the field `payload` holds the JSON `{source, drops: [{zone_id, epcs: [...]}], pickups: [...], refused: [...], signed_name, issue_note}`, plus the files `photo` (JPEG, at most 5 MB) and `signature` (PNG, at most 1 MB) → `{"task": {...}, "next_task_id": int|null}`
   - `GET /tasks/{id}/photo` and `GET /tasks/{id}/signature` (office) → the file
@@ -4439,7 +4439,7 @@ final class TaskCompleteTest extends ApiTestCase
         Storage::disk('local')->assertExists('proofs/' . $row['signature_path']);
 
         $next = $this->taskRow($out['next_task_id']);
-        $this->assertSame(['swap', 'open', 1, 1, $task, days_after(today(), 14), null],
+        $this->assertSame(['swap', 'open', 1, 1, $task, days_after(today_nl(), 14), null],
             [$next['type'], $next['status'], $next['contract_id'], $next['building_id'], $next['previous_task_id'], $next['due_date'], $next['assigned_to']]);
 
         $event = $this->events(1)[0];
@@ -4596,7 +4596,7 @@ final class TaskCompleteTest extends ApiTestCase
 
         $this->loginAs('office');
         $this->ok($this->api('POST', '/contracts/1/end'));   // cancels the swap that the delivery planned
-        $collection = $this->ok($this->api('POST', '/tasks', ['contract_id' => 1, 'building_id' => 1, 'due_date' => today()]))['task']['id'];
+        $collection = $this->ok($this->api('POST', '/tasks', ['contract_id' => 1, 'building_id' => 1, 'due_date' => today_nl()]))['task']['id'];
         $this->ok($this->api('PATCH', "/tasks/$collection", ['assigned_to' => $this->users['driver']]));
 
         $this->loginAs('driver');
@@ -4857,7 +4857,7 @@ Add these members at the end of the class in `site/app/Http/Controllers/TaskCont
                 $nextId = null;
                 if ($task['type'] !== 'collection' && $task['contract_status'] === 'active') {
                     DB::insert("INSERT INTO tasks (type, contract_id, building_id, previous_task_id, due_date) VALUES ('swap', ?, ?, ?, ?)",
-                        [$task['contract_id'], $task['building_id'], $id, days_after(today(), $task['swap_interval_days'])]);
+                        [$task['contract_id'], $task['building_id'], $id, days_after(today_nl(), $task['swap_interval_days'])]);
                     $nextId = (int) DB::getPdo()->lastInsertId();
                 }
                 return ['task' => self::view($id), 'next_task_id' => $nextId];
@@ -5005,7 +5005,7 @@ final class LifecycleTest extends ApiTestCase
         $delivered = $this->closeStop($delivery,
             [['zone_id' => 1, 'epcs' => $this->epcs(1, 2)], ['zone_id' => 2, 'epcs' => $this->epcs(3)]], []);
         $swap = $delivered['next_task_id'];
-        $this->assertSame(days_after(today(), 14), DB::scalar('SELECT due_date FROM tasks WHERE id = ?', [$swap]));
+        $this->assertSame(days_after(today_nl(), 14), DB::scalar('SELECT due_date FROM tasks WHERE id = ?', [$swap]));
         $this->assertSame('at_customer', $this->item(1)['status']);
 
         // 5. D + n: the office assigns the swap. Three clean mats go out, the three used ones come back.
@@ -5032,7 +5032,7 @@ final class LifecycleTest extends ApiTestCase
         $this->scanHandover('washing', $c, 1, 2, 3);
         $this->scanHandover('washing', $c, 1, 2, 3);
         $this->ok($this->api('POST', "/handovers/$c/close"));
-        $this->assertSame(['ready', 1, today(), null],
+        $this->assertSame(['ready', 1, today_nl(), null],
             [$this->item(1)['status'], $this->item(1)['wash_count'], $this->item(1)['current_wash_date'], $this->item(1)['previous_wash_date']]);
 
         // 8. A washed mat must pass the quality check again before it can go out.
