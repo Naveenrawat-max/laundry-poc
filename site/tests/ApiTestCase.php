@@ -46,7 +46,8 @@ abstract class ApiTestCase extends TestCase
             : $this->call($method, '/api/v1' . $path, ['payload' => json_encode($body)], [], $files,
                 $this->transformHeadersToServerVars($headers));
         $isJson = str_contains((string) $response->headers->get('Content-Type'), 'json');
-        return [$response->status(), $isJson ? $response->json() : $response];
+        // getStatusCode() and not status(): a file answer is a Symfony response, which has no status().
+        return [$response->getStatusCode(), $isJson ? $response->json() : $response];
     }
 
     /** Puts a user in the session, as a login would. A real login stores a password hash; drop it or the next call is logged out. */
