@@ -5,7 +5,7 @@ import { Card, CardBody, CardTitle } from '@/components/ui/card'
 import { Chip } from '@/components/ui/chip'
 import { Load, PageHead } from '@/app/ui'
 import { useLoad } from '@/lib/hooks'
-import { STATUS, STATUSES, TASK_TYPE, day, today } from '@/lib/labels'
+import { PLACES, STATUS, STATUSES, TASK_TYPE, day, today } from '@/lib/labels'
 import { useSession } from '@/lib/session'
 import type { Contract, HandoverIssue, HandoverRow, Status, Task } from '@/lib/types'
 
@@ -16,13 +16,6 @@ type Numbers = {
   openHandovers: number
   activeContracts: number
 }
-
-const PLACES: { name: string; statuses: Status[] }[] = [
-  { name: 'In inventory', statuses: ['registered', 'ready', 'qc_passed', 'rewash', 'repair'] },
-  { name: 'On a van', statuses: ['out_for_delivery', 'refused', 'collected'] },
-  { name: 'At customers', statuses: ['at_customer'] },
-  { name: 'In washing', statuses: ['in_washing'] },
-]
 
 function Stat({ label, value, note, to }: { label: string; value: number; note?: string; to: string }) {
   return (
@@ -88,7 +81,7 @@ export function DashboardPage() {
                       label={place.name}
                       value={place.statuses.reduce((sum, s) => sum + n.byStatus[s], 0)}
                       note={`of ${inUse} mats in use`}
-                      to={`/mats?status=${place.statuses[0]}`}
+                      to={`/mats?status=${place.statuses.join(',')}`}
                     />
                   ))}
                 </div>

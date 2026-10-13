@@ -37,6 +37,14 @@ export const STATUS: Record<Status, string> = {
   in_washing: 'In washing',
 }
 
+/** Where a mat is, as the dashboard and the mat list group the statuses. */
+export const PLACES: { name: string; statuses: Status[] }[] = [
+  { name: 'In inventory', statuses: ['registered', 'ready', 'qc_passed', 'rewash', 'repair'] },
+  { name: 'On a van', statuses: ['out_for_delivery', 'refused', 'collected'] },
+  { name: 'At customers', statuses: ['at_customer'] },
+  { name: 'In washing', statuses: ['in_washing'] },
+]
+
 /** The statuses in which a driver carries the mat. */
 export const HELD: Status[] = ['out_for_delivery', 'refused', 'collected']
 

@@ -35,12 +35,15 @@ export function TasksPage() {
   const query = new URLSearchParams({ ...(status !== 'all' ? { status } : {}), ...(type ? { type } : {}) }).toString()
   const tasks = useLoad(() => api.get<{ tasks: Task[] }>(`/tasks${query ? `?${query}` : ''}`).then((r) => r.tasks), [api, query], 20000)
   const drivers = useLoad(() => api.get<{ rows: User[] }>('/users').then((r) => r.rows.filter((u) => u.role === 'driver' && u.is_active)), [api])
-  const contracts = useLoad(() => api.get<{ rows: Contract[] }>('/contracts').then((r) => r.rows.filter((c) => c.status !== 'draft')), [api])
+  const started = useLoad(() => api.get<{ rows: Contract[] }>('/contracts').then((r) => r.rows.filter((c) => c.status !== 'draft')), [api])
 
   const [moving, setMoving] = useState<{ task: Task; due: string } | null>(null)
   const [cancelling, setCancelling] = useState<Task | null>(null)
   const [proof, setProof] = useState<Task | null>(null)
-  const [collection, setCollection] = useState<{ contract_id: number | ''; building_id: number | ''; due_date: string } | null>(null)
+  const [creating, setCreating] = useState<{ type: 'swap' | 'collection'; contract_id: number | ''; building_id: number | ''; due_date: string } | null>(null)
+  // A swap needs a running contract. A collection also fits an ended one: that is when the mats come back.
+  const contractsFor = (type: 'swap' | 'collection') => (started.data ?? []).filter((c) => type === 'collection' || c.status === 'active')
+  const contracts = contractsFor(creating?.type ?? 'swap')
   const act = useAction()
   const now = today()
 
@@ -63,7 +66,7 @@ export function TasksPage() {
   const close = () => {
     setMoving(null)
     setCancelling(null)
-    setCollection(null)
+    setCreating(null)
     act.clear()
   }
   const finish = async () => {
@@ -71,8 +74,8 @@ export function TasksPage() {
     await tasks.reload()
   }
 
-  const collectionBuildings = (() => {
-    const contract = contracts.data?.find((c) => c.id === collection?.contract_id)
+  const buildings = (() => {
+    const contract = contracts.find((c) => c.id === creating?.contract_id)
     return [...new Map(contract?.lines.map((l) => [l.building_id, l.building_name])).entries()]
   })()
 
@@ -90,8 +93,8 @@ export function TasksPage() {
           <option value="collection">Collections</option>
         </Select>
         <Segmented label="Status" options={STATUS_OPTIONS} value={status} onChange={setStatus} />
-        <Button variant="solid" iconRight={null} onClick={() => setCollection({ contract_id: contracts.data?.[0]?.id ?? '', building_id: '', due_date: now })}>
-          New collection
+        <Button variant="solid" iconRight={null} onClick={() => setCreating({ type: 'swap', contract_id: contractsFor('swap')[0]?.id ?? '', building_id: '', due_date: now })}>
+          New task
         </Button>
       </Toolbar>
 
@@ -193,23 +196,40 @@ export function TasksPage() {
       </FormDialog>
 
       <FormDialog
-        open={collection !== null}
-        title="New collection task"
-        description="The driver only picks mats up. Nothing is laid and no next swap is planned. Use it when a contract ends."
+        open={creating !== null}
+        title="New task"
+        description={
+          creating?.type === 'collection'
+            ? 'The driver only picks mats up. Nothing is laid and no next swap is planned. Use it when a contract ends.'
+            : 'The driver lays clean mats and picks up the used ones. Use it for a building that has no visit planned, for example after its swap was cancelled. Closing it plans the next swap as usual.'
+        }
         submitLabel="Create task"
         busy={act.busy}
         error={act.error}
         onSubmit={() =>
           void act.run(async () => {
-            await api.post('/tasks', { contract_id: Number(collection!.contract_id), building_id: Number(collection!.building_id), due_date: collection!.due_date })
+            await api.post('/tasks', { type: creating!.type, contract_id: Number(creating!.contract_id), building_id: Number(creating!.building_id), due_date: creating!.due_date })
             await finish()
           })
         }
         onClose={close}
       >
-        <Field label="Contract" hint={contracts.data?.length === 0 ? 'No started contract yet.' : undefined}>
-          <Select value={collection?.contract_id ?? ''} onChange={(e) => setCollection((c) => (c ? { ...c, contract_id: Number(e.target.value), building_id: '' } : c))} wrapperClassName="w-full" required>
-            {contracts.data?.map((c) => (
+        <Field label="Kind of task">
+          <Select
+            value={creating?.type ?? 'swap'}
+            onChange={(e) => {
+              const type = e.target.value as 'swap' | 'collection'
+              setCreating((c) => (c ? { ...c, type, contract_id: contractsFor(type)[0]?.id ?? '', building_id: '' } : c))
+            }}
+            wrapperClassName="w-full"
+          >
+            <option value="swap">Swap</option>
+            <option value="collection">Collection</option>
+          </Select>
+        </Field>
+        <Field label="Contract" hint={contracts.length === 0 ? (creating?.type === 'swap' ? 'No active contract.' : 'No started contract yet.') : undefined}>
+          <Select value={creating?.contract_id ?? ''} onChange={(e) => setCreating((c) => (c ? { ...c, contract_id: Number(e.target.value), building_id: '' } : c))} wrapperClassName="w-full" required>
+            {contracts.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.customer_name} ({c.status})
               </option>
@@ -217,11 +237,11 @@ export function TasksPage() {
           </Select>
         </Field>
         <Field label="Building">
-          <Select value={collection?.building_id ?? ''} onChange={(e) => setCollection((c) => (c ? { ...c, building_id: Number(e.target.value) } : c))} wrapperClassName="w-full" required>
+          <Select value={creating?.building_id ?? ''} onChange={(e) => setCreating((c) => (c ? { ...c, building_id: Number(e.target.value) } : c))} wrapperClassName="w-full" required>
             <option value="" disabled>
               Choose a building
             </option>
-            {collectionBuildings.map(([id, name]) => (
+            {buildings.map(([id, name]) => (
               <option key={id} value={id}>
                 {name}
               </option>
@@ -229,7 +249,7 @@ export function TasksPage() {
           </Select>
         </Field>
         <Field label="Due date">
-          <Input type="date" value={collection?.due_date ?? ''} onChange={(e) => setCollection((c) => (c ? { ...c, due_date: e.target.value } : c))} required />
+          <Input type="date" value={creating?.due_date ?? ''} onChange={(e) => setCreating((c) => (c ? { ...c, due_date: e.target.value } : c))} required />
         </Field>
       </FormDialog>
 
@@ -244,7 +264,7 @@ export function TasksPage() {
         onConfirm={() => void act.run(async () => api.patch(`/tasks/${cancelling!.id}`, { status: 'cancelled' }).then(finish))}
         onCancel={close}
       >
-        {cancelling && `The ${TASK_TYPE[cancelling.type].toLowerCase()} at ${cancelling.building_name} disappears from the driver's list. A cancelled task cannot be opened again, and no next swap is planned from it.`}
+        {cancelling && `The ${TASK_TYPE[cancelling.type].toLowerCase()} at ${cancelling.building_name} disappears from the driver's list. A cancelled task cannot be opened again, and no next swap is planned from it.${cancelling.type === 'collection' ? '' : ' To visit this building again, make a swap with "New task".'}`}
       </ConfirmDialog>
 
       <Dialog open={proof !== null} onClose={() => setProof(null)} title="Proof of the stop" description={proof ? `${TASK_TYPE[proof.type]} at ${proof.building_name}, closed ${when(proof.completed_at)}.` : undefined} className="sm:max-w-2xl">

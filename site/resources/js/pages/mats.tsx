@@ -13,7 +13,7 @@ import { Select } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { useAction, useLoad } from '@/lib/hooks'
-import { EVENT, HELD, STATUS, STATUSES, day, when } from '@/lib/labels'
+import { EVENT, HELD, PLACES, STATUS, STATUSES, day, when } from '@/lib/labels'
 import { useSession } from '@/lib/session'
 import type { Building, Customer, ItemType, MatEvent, OfficeMat, Status, User, Zone } from '@/lib/types'
 
@@ -73,11 +73,21 @@ export function MatsPage() {
         <SearchInput aria-label="Search by SKU or tag id" placeholder="SKU or tag id" value={q} onChange={(e) => setQ(e.target.value)} />
         <Select aria-label="Status" value={status} onChange={(e) => change({ status: e.target.value })}>
           <option value="">Every status</option>
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {STATUS[s]}
-            </option>
-          ))}
+          {/* A place is several statuses at once: the API takes them with commas between. */}
+          <optgroup label="By place">
+            {PLACES.filter((p) => p.statuses.length > 1).map((p) => (
+              <option key={p.name} value={p.statuses.join(',')}>
+                {p.name}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="By status">
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {STATUS[s]}
+              </option>
+            ))}
+          </optgroup>
         </Select>
         <Select aria-label="Mat type" value={type} onChange={(e) => change({ type: e.target.value })}>
           <option value="">Every type</option>

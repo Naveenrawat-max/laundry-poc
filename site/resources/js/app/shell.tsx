@@ -1,6 +1,7 @@
 /** The frame around every office page: the background, the menu and the page column. */
 import { Link, Outlet, useLocation } from 'react-router'
 
+import { TaskReminder } from '@/app/reminder'
 import { Backdrop } from '@/components/backdrop'
 import { type NavGroup, Navbar } from '@/components/navbar'
 import { Button } from '@/components/ui/button'
@@ -63,6 +64,7 @@ export function Shell() {
         }
       />
       <main className={cn('mx-auto p-6 sm:p-12 sm:pt-6', wide ? 'max-w-[1500px]' : 'max-w-6xl')}>
+        <TaskReminder />
         <Outlet />
       </main>
     </div>
