@@ -17,4 +17,8 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
 
     Route::post('/auth/logout', [C\AuthController::class, 'logout']);
     Route::get('/auth/me', [C\AuthController::class, 'me']);
+
+    Route::post('/scan/lookup', [C\ScanController::class, 'lookup'])->middleware($scanners);
+    Route::get('/sim/items', [C\ScanController::class, 'simItems'])->middleware($scanners);
+    Route::post('/items', [C\ItemController::class, 'store'])->middleware('role:inventory');
 });
