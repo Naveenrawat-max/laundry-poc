@@ -49,9 +49,10 @@ abstract class ApiTestCase extends TestCase
         return [$response->status(), $isJson ? $response->json() : $response];
     }
 
-    /** Puts a user in the session, as a login would. */
+    /** Puts a user in the session, as a login would. A real login stores a password hash; drop it or the next call is logged out. */
     protected function loginAs(string $username): void
     {
+        $this->flushSession();
         $this->withSession([Auth::guard('web')->getName() => $this->users[$username]]);
     }
 
