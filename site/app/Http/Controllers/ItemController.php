@@ -166,11 +166,15 @@ final class ItemController extends Controller
     public function index(Request $request): array
     {
         $filter = $request->validate([
-            'status' => 'nullable|in:' . implode(',', Scan::STATUSES),
+            'status' => 'nullable|string|max:200',   // one status, or several with commas between: a place is a group of statuses
             'type' => 'nullable|integer|min:0',
             'q' => 'nullable|string|max:64',
             'page' => 'nullable|integer|min:0',
         ]);
+        $statuses = isset($filter['status']) ? array_unique(explode(',', $filter['status'])) : [];
+        if (array_diff($statuses, Scan::STATUSES) !== []) {
+            fail(422, 'invalid_input', 'Unknown status. Use: ' . implode(', ', Scan::STATUSES) . '.');
+        }
         $user = $request->user();
 
         $where = ['1 = 1'];
@@ -183,9 +187,9 @@ final class ItemController extends Controller
         } elseif ($user->role === 'washing') {
             $where[] = "i.status = 'in_washing'";
         }
-        if (isset($filter['status'])) {
-            $where[] = 'i.status = ?';
-            $params[] = $filter['status'];
+        if ($statuses !== []) {
+            $where[] = 'i.status IN (' . marks($statuses) . ')';
+            array_push($params, ...$statuses);
         }
         if (isset($filter['type'])) {
             $where[] = 'i.item_type_id = ?';

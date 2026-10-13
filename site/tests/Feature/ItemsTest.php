@@ -149,6 +149,24 @@ final class ItemsTest extends ApiTestCase
         $this->assertSame(['id' => $this->users['driver'], 'name' => 'Driver'], $carried['holder']);
     }
 
+    public function test_the_mat_list_filters_on_several_statuses_at_once(): void
+    {
+        $this->setItems([1, 2], 'qc_passed');
+        $this->setItems([3], 'rewash');
+        $this->setItems([4], 'in_washing');
+        $this->loginAs('office');
+        // A place is a group of statuses: "in inventory" is five of them.
+        $this->assertSame(3, $this->ok($this->api('GET', '/items?status=qc_passed,rewash'))['total']);
+        $this->assertSame(39, $this->ok($this->api('GET', '/items?status=registered,ready,qc_passed,rewash,repair'))['total']);
+        $this->assertSame(['MOCK-0003'], array_column($this->ok($this->api('GET', '/items?status=rewash,in_washing&q=MOCK-0003'))['items'], 'sku'));
+        $this->assertError(422, 'invalid_input', $this->api('GET', '/items?status=ready,bogus'));
+        $this->assertError(422, 'invalid_input', $this->api('GET', '/items?status=ready,'));
+
+        // A list never widens what a role may see: washing still gets only the mats in washing.
+        $this->loginAs('washing');
+        $this->assertSame(['MOCK-0004'], array_column($this->ok($this->api('GET', '/items?status=ready,in_washing'))['items'], 'sku'));
+    }
+
     public function test_the_office_gets_the_number_of_mats_per_status(): void
     {
         $this->setItems([5, 6], 'at_customer', null, 1);

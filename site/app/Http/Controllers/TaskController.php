@@ -120,32 +120,50 @@ final class TaskController extends Controller
             . " ORDER BY t.status = 'open' DESC, t.due_date, t.id LIMIT 200", $params)];
     }
 
-    /** The office creates a collection task: pick-up only, when a contract ends. */
+    /**
+     * The office creates a task by hand. A collection: pick-up only, when a contract ends.
+     * A swap: for a building of a running contract that has no visit planned, because its swap was cancelled.
+     * Every other swap is planned by closing a stop.
+     */
     public function store(Request $request): array
     {
         $in = $request->validate([
+            'type' => 'nullable|in:collection,swap',
             'contract_id' => 'required|integer|min:0',
             'building_id' => 'required|integer|min:0',
             'due_date' => 'required|date_format:Y-m-d',
         ]);
+        $type = $in['type'] ?? 'collection';
         $contractId = (int) $in['contract_id'];
         $buildingId = (int) $in['building_id'];
 
-        $contract = row('SELECT status FROM contracts WHERE id = ?', [$contractId]);
-        if ($contract === null) {
-            fail(404, 'not_found', 'No such contract.');
-        }
-        if ($contract['status'] === 'draft') {
-            fail(409, 'not_started', 'A draft contract has no mats to collect.');
-        }
-        $inContract = DB::scalar('SELECT 1 FROM contract_lines l JOIN zones z ON z.id = l.zone_id WHERE l.contract_id = ? AND z.building_id = ? LIMIT 1',
-            [$contractId, $buildingId]);
-        if ($inContract === null) {
-            fail(422, 'invalid_reference', 'This building is not part of that contract.');
-        }
-        DB::insert("INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES ('collection', ?, ?, ?)",
-            [$contractId, $buildingId, $in['due_date']]);
-        return ['task' => self::view((int) DB::getPdo()->lastInsertId())];
+        return DB::transaction(function () use ($type, $contractId, $buildingId, $in): array {
+            // The lock makes two clicks on "create" wait for each other, so a building gets one swap and not two.
+            $contract = row('SELECT status FROM contracts WHERE id = ? FOR UPDATE', [$contractId]);
+            if ($contract === null) {
+                fail(404, 'not_found', 'No such contract.');
+            }
+            if ($contract['status'] === 'draft') {
+                fail(409, 'not_started', 'A draft contract has no tasks yet. Start it first.');
+            }
+            if ($type === 'swap' && $contract['status'] !== 'active') {
+                fail(409, 'not_active', 'An ended contract gets no more swaps, only collections.');
+            }
+            $inContract = DB::scalar('SELECT 1 FROM contract_lines l JOIN zones z ON z.id = l.zone_id WHERE l.contract_id = ? AND z.building_id = ? LIMIT 1',
+                [$contractId, $buildingId]);
+            if ($inContract === null) {
+                fail(422, 'invalid_reference', 'This building is not part of that contract.');
+            }
+            $planned = $type !== 'swap' ? null : row("SELECT type, due_date FROM tasks
+                WHERE contract_id = ? AND building_id = ? AND status = 'open' AND type IN ('delivery', 'swap') LIMIT 1",
+                [$contractId, $buildingId]);
+            if ($planned !== null) {
+                fail(409, 'already_planned', "This building already has an open {$planned['type']}, due {$planned['due_date']}. Move that one.");
+            }
+            DB::insert('INSERT INTO tasks (type, contract_id, building_id, due_date) VALUES (?, ?, ?, ?)',
+                [$type, $contractId, $buildingId, $in['due_date']]);
+            return ['task' => self::view((int) DB::getPdo()->lastInsertId())];
+        });
     }
 
     /** The office assigns a driver, moves the due date or cancels. Only while the task is open. */

@@ -127,4 +127,38 @@ final class TasksTest extends ApiTestCase
         $this->loginAs('washing');
         $this->assertError(403, 'forbidden', $this->api('GET', '/tasks'));
     }
+
+    public function test_the_office_plans_a_swap_by_hand_when_a_building_has_no_visit_planned(): void
+    {
+        [$delivery] = $this->activateContract(1);
+        $new = ['type' => 'swap', 'contract_id' => 1, 'building_id' => 1, 'due_date' => '2026-12-24'];
+        // The delivery is still open: this building has its visit already.
+        $this->assertError(409, 'already_planned', $this->api('POST', '/tasks', $new));
+
+        // Cancelling stops the repeat. A swap made by hand starts it again.
+        $this->ok($this->api('PATCH', "/tasks/$delivery", ['status' => 'cancelled']));
+        $task = $this->ok($this->api('POST', '/tasks', $new))['task'];
+        $this->assertSame(['swap', 'open', '2026-12-24', null, null],
+            [$task['type'], $task['status'], $task['due_date'], $task['assigned_to'], $task['previous_task_id']]);
+        $this->assertError(409, 'already_planned', $this->api('POST', '/tasks', $new));   // one open visit per building
+
+        // A collection is no visit that lays mats, so it may stand next to the swap. Without a type it is a collection, as before.
+        $this->assertSame('collection', $this->ok($this->api('POST', '/tasks', ['type' => 'collection'] + $new))['task']['type']);
+        $this->assertError(422, 'invalid_input', $this->api('POST', '/tasks', ['type' => 'delivery'] + $new));
+        $this->assertError(422, 'invalid_reference', $this->api('POST', '/tasks', ['building_id' => 2] + $new));   // not in contract 1
+        $this->assertError(409, 'not_started', $this->api('POST', '/tasks', ['contract_id' => 2, 'building_id' => 2] + $new));
+
+        // The driver gets it like any swap, with the mats the contract names.
+        $this->ok($this->api('PATCH', "/tasks/{$task['id']}", ['assigned_to' => $this->users['driver']]));
+        $this->loginAs('driver');
+        $mine = $this->ok($this->api('GET', '/tasks'))['tasks'];
+        $this->assertSame([[$task['id'], 'swap', 3]], array_map(fn (array $t) => [$t['id'], $t['type'], array_sum(array_column($t['expected'], 'quantity'))], $mine));
+        $this->assertError(403, 'forbidden', $this->api('POST', '/tasks', $new));
+
+        // An ended contract gets no more swaps, only collections.
+        $this->loginAs('office');
+        $this->ok($this->api('POST', '/contracts/1/end'));
+        $this->assertError(409, 'not_active', $this->api('POST', '/tasks', $new));
+        $this->assertSame('collection', $this->ok($this->api('POST', '/tasks', ['type' => 'collection'] + $new))['task']['type']);
+    }
 }
