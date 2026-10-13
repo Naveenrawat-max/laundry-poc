@@ -104,4 +104,17 @@ abstract class ApiTestCase extends TestCase
     {
         return rows('SELECT * FROM item_events WHERE item_id = ? ORDER BY id', [$this->item($n)['id']]);
     }
+
+    /** Activates a seeded contract as the office and, if a driver is named, assigns its tasks to him. Returns the task ids. */
+    protected function activateContract(int $contractId, ?string $driver = null): array
+    {
+        $this->loginAs('office');
+        $taskIds = $this->ok($this->api('POST', "/contracts/$contractId/activate"))['task_ids'];
+        if ($driver !== null) {
+            foreach ($taskIds as $taskId) {
+                $this->ok($this->api('PATCH', "/tasks/$taskId", ['assigned_to' => $this->users[$driver]]));
+            }
+        }
+        return $taskIds;
+    }
 }

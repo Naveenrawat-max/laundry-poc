@@ -40,4 +40,9 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     Route::post('/contracts/{id}/activate', [C\ContractController::class, 'activate'])->middleware('role:office');
     Route::post('/contracts/{id}/end', [C\ContractController::class, 'end'])->middleware('role:office');
 
+
+    Route::get('/tasks', [C\TaskController::class, 'index'])->middleware('role:office,driver,inventory,outbound');
+    Route::post('/tasks', [C\TaskController::class, 'store'])->middleware('role:office');
+    Route::patch('/tasks/{id}', [C\TaskController::class, 'update'])->middleware('role:office');
+
 });
