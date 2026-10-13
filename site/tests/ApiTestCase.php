@@ -104,4 +104,19 @@ abstract class ApiTestCase extends TestCase
     {
         return rows('SELECT * FROM item_events WHERE item_id = ? ORDER BY id', [$this->item($n)['id']]);
     }
+
+    /** Logs in as the giver and opens a handover. Returns its id. */
+    protected function openHandover(string $giver, string $type, string $receiver): int
+    {
+        $this->loginAs($giver);
+        return $this->ok($this->api('POST', '/handovers',
+            ['type' => $type, 'receiver_id' => $this->users[$receiver]]))['handover']['id'];
+    }
+
+    /** Logs in as $who and scans mock mats into a handover. Returns the scan answer. */
+    protected function scanHandover(string $who, int $handover, int ...$mats): array
+    {
+        $this->loginAs($who);
+        return $this->ok($this->api('POST', "/handovers/$handover/scan", $this->reads(...$mats)));
+    }
 }

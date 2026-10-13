@@ -27,4 +27,7 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     Route::post('/items/qc', [C\ItemController::class, 'qc'])->middleware('role:inventory');
     Route::get('/items/{id}', [C\ItemController::class, 'show'])->middleware('role:office,washing');
     Route::post('/items/{id}/correct', [C\ItemController::class, 'correct'])->middleware('role:office');
+
+    Route::post('/handovers', [C\HandoverController::class, 'open'])->middleware($scanners);
+    Route::post('/handovers/{id}/scan', [C\HandoverController::class, 'scan'])->middleware($scanners);
 });
