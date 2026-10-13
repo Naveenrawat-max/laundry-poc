@@ -200,8 +200,8 @@ CREATE TABLE tasks (
 
 -- One handover = one giver passing a pile to one receiver.
 --   inventory_to_driver   Handover A
---   driver_to_washing     Handover B (adds 1 to the wash count)
---   washing_to_inventory  Handover C (receiver scan optional)
+--   driver_to_washing     Handover B
+--   washing_to_inventory  Handover C (the giver's scan adds 1 to the wash count; receiver scan optional)
 --   driver_to_inventory   refused or undelivered mats coming back
 --   inventory_to_washing  mats that failed the quality check with "rewash"
 CREATE TABLE handovers (

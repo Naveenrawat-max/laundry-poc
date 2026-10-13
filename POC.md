@@ -1,6 +1,6 @@
 # Laundry RFID POC
 
-Version: 0.3.0
+Version: 0.3.1
 
 Proti rents door mats to its customers. Proti owns the mats, delivers and collects them itself, and washes them itself. One mat carries two RFID tags with the same EPC. The Chainway C72 only returns tag ids. The apps store everything else: SKU, status, customer location, washing dates, and washing cycle count.
 
@@ -19,7 +19,7 @@ The flow is drawn in [FLOW.md](FLOW.md). The full feature list is in [FEATURES.m
 4. The delivery guy delivers: scan, photo, signature. That date is D.
 5. At D+n the system creates a swap task. The delivery guy drops a clean mat and takes the used one: scan, photo, signature.
 6. **Handover B:** the delivery guy scans the used mats out, the washing house manager scans them in.
-7. **Handover C:** washing scans the washed mats out, inventory scans them in. The second scan is optional. The mat is ready to use again.
+7. **Handover C:** after washing, the washing house manager scans the washed mats out. This scan is required: it confirms the mats are ready to use and counts one washing cycle. Inventory scans them in; that second scan is optional.
 
 A mat moves at a handover only when both sides have scanned it. A mat scanned by one side stays with the giver and is flagged for the office.
 
@@ -43,7 +43,7 @@ The contract sets the days between swaps per customer. The system creates the sw
 
 ### 5. Washing count
 
-The washing house manager's scan in Handover B moves the current washing date to the previous washing date, sets the current washing date to today, and adds 1 to the cycle count. Scanning the same handover again adds nothing.
+The washing house manager's scan after washing, in Handover C, moves the current washing date to the previous washing date, sets the current washing date to today, and adds 1 to the cycle count. Scanning the same handover again adds nothing.
 
 ### 6. Mat list
 

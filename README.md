@@ -13,7 +13,7 @@
 
 RFID mat tracking for Proti, a company that rents, delivers, collects and washes door mats.
 
-![Version](https://img.shields.io/badge/version-0.4.13-2563eb?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.5.0-2563eb?style=flat-square)
 ![Stage](https://img.shields.io/badge/stage-design-f59e0b?style=flat-square)
 ![Handheld](https://img.shields.io/badge/handheld-simulated-8b5cf6?style=flat-square)
 ![Data](https://img.shields.io/badge/data-mock%20mats-64748b?style=flat-square)
@@ -50,7 +50,7 @@ RFID mat tracking for Proti, a company that rents, delivers, collects and washes
 Proti rents door mats to its customers, delivers and collects them with its own drivers, and washes them in its own washing house. Every mat carries two RFID tags. This system follows each mat through inventory, delivery, the customer, collection and washing.
 
 > [!NOTE]
-> **Design stage.** The scope, the flow, the system design and the database are written. No application code exists yet. The first build is a web app only: the Chainway C72 handheld is simulated by a scanner screen in the web app, and all mats are mock mats.
+> **Backend built, screens not yet.** The Laravel API under `/api/v1` is built and tested. The web app (office console and scanner simulator) is the next step. The Chainway C72 handheld is simulated, and all mats are mock mats.
 
 ## How it helps a laundry
 
@@ -149,7 +149,7 @@ flowchart TB
     end
 
     subgraph WASH["WASHING HOUSE"]
-        INW["in_washing<br/>previous date = old current date<br/>current date = today<br/>wash count +1"]
+        INW["in_washing"]
     end
 
     NEW -- "Register" --> REG
@@ -167,7 +167,7 @@ flowchart TB
     ATC -- "Swap or collect: scan, photo, signature" --> COLL
     COLL == "HANDOVER B<br/>driver scans out, washing scans in" ==> INW
     REWASH -. "Rewash handover" .-> INW
-    INW == "HANDOVER C<br/>washing scans out, inventory scan optional" ==> READY
+    INW == "HANDOVER C<br/>washing scans out after washing: wash count +1<br/>inventory scan optional" ==> READY
 
     classDef side stroke-dasharray:4 3
 ```
@@ -197,7 +197,7 @@ sequenceDiagram
     S-->>G: Per mat: accepted, or rejected with the reason
     R->>S: Scan the pile
     S-->>R: Per mat: found, missing, or not on the list
-    Note over S: A mat scanned by both sides moves at once.<br/>Handover B also adds 1 to the wash count.
+    Note over S: A mat scanned by both sides moves at once.<br/>In Handover C the washing scan alone makes the mat ready and adds 1 to the wash count.
     R->>S: Done
     Note over S: A mat scanned by one side stays with the giver.
     S-->>O: One-sided mats appear on the handover issue list
@@ -256,13 +256,59 @@ mysql -u USER -p DBNAME < db/schema.sql
 mysql -u USER -p DBNAME < db/seed.sql
 ```
 
-Both files run unchanged on MySQL 8.0.16+ and MariaDB 10.4+. At TransIP the same two files can be imported through phpMyAdmin.
+Both files run unchanged on MySQL 8.0.16+ and MariaDB 10.4+. Laravel loads them: `php artisan migrate` runs `db/schema.sql`, `php artisan db:seed` runs `db/seed.sql`.
 
 > [!IMPORTANT]
 > The seed creates no users, because a password must not sit in a file. See "First login" in [ARCHITECTURE.md](ARCHITECTURE.md#first-login).
 
 > [!TIP]
 > Every mock tag id starts with `4D4F434B` ("MOCK" in hex), so mock mats can be removed before real mats are registered.
+
+## Run the API locally
+
+Needs PHP 8.3+, Composer, an SSH client, and a test database at TransIP. No database is installed locally. Copy `site/.env.example` to `site/.env.testing`, set `APP_ENV=testing`, `APP_DEBUG=true`, `APP_URL=http://127.0.0.1:8000` and `SESSION_SECURE_COOKIE=false`, and fill in the details of the **test** database. The tests rebuild that database on every run, so it must never be the real one.
+
+Open the SSH tunnel first and leave it open while using the API or while Naveen runs the tests:
+
+```bash
+ssh -N -L 3307:<database host name>:3306 <ssh user>@<ssh host>
+```
+
+In `site/.env.testing`, set `DB_HOST=127.0.0.1` and `DB_PORT=3307`. Never run the tests while another person is using the shared test database; each run rebuilds its tables.
+
+```bash
+cd site
+composer install
+php artisan key:generate --env=testing     # once
+php artisan test                           # rebuilds the test database, then runs
+php artisan laundry:office-user --env=testing             # a user to log in with
+APP_ENV=testing php -S 127.0.0.1:8000 -t public
+```
+
+The next test run rebuilds the test database, and that user is gone with it.
+
+The API then answers at `http://127.0.0.1:8000/api/v1`. The endpoints are listed in [ARCHITECTURE.md](ARCHITECTURE.md#endpoints).
+
+## Put it on TransIP
+
+Needs a web hosting package with SSH, PHP 8.3+ and a web root that can be pointed at a subfolder. Every setting lives in `site/.env` on the server; nothing is hardcoded.
+
+```bash
+# over SSH, in a folder that is not reachable from the web
+git clone <this repository> laundry
+cd laundry/site
+composer install --no-dev --optimize-autoloader
+cp .env.example .env                 # then fill in APP_URL and the real database
+php artisan key:generate
+php artisan migrate --force          # builds the tables from db/schema.sql
+php artisan db:seed --force          # the mock data of db/seed.sql, for the demo only
+php artisan laundry:office-user      # the first office user
+php artisan config:cache             # again after every change to .env
+```
+
+Then, in the TransIP control panel, point the site's web root (DocumentRoot) at `laundry/site/public` and switch HTTPS on. The folders `site/storage` and `site/bootstrap/cache` must be writable by PHP.
+
+Never run `php artisan migrate:fresh` or `php artisan test` on the server: both empty the database they are pointed at.
 
 ## Versions
 

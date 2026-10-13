@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.3.0
+Version: 0.4.1
 
 System design for the first build of the Proti mat tracking POC. It follows [POC.md](POC.md), [FEATURES.md](FEATURES.md) and [FLOW.md](FLOW.md). The database is in [db/schema.sql](db/schema.sql), the mock data in [db/seed.sql](db/seed.sql).
 
@@ -41,7 +41,7 @@ flowchart LR
 | Part | Built with | Job |
 |---|---|---|
 | Frontend | React, built to static files | Two areas in one app: `/office` and `/scanner`. After login the role decides which one opens. |
-| Backend | PHP 8.3+ JSON API | Login, role checks, every business rule, every status change. The frontend never decides whether a mat may move. |
+| Backend | Laravel 13 on PHP 8.3+, JSON API | Login, role checks, every business rule, every status change. The frontend never decides whether a mat may move. Laravel does the login session, the forgery check, input validation and file storage; the rules are this project's own code. |
 | Database | MySQL 8.0.16+ or MariaDB 10.4+ | Current state of every mat plus its full history. |
 | File storage | Folder on the hosting disk | Proof photos and signatures. |
 
@@ -50,26 +50,40 @@ flowchart LR
 Designed for a TransIP web hosting package: PHP, one MySQL/MariaDB database, a disk, cron jobs. No long-running processes and no websockets, so screens refresh by asking the API again (polling), not by push.
 
 ```
-site/
-  app/               PHP backend code            (not reachable from the web)
-  storage/proofs/    photos and signatures       (not reachable from the web)
-  .env               database password, settings (not reachable from the web, never in git)
-  www/               web root
-    index.php        entry point for /api/v1/*
-    index.html       the React app
-    assets/          the React build
-    .htaccess        /api/* -> index.php, everything else -> index.html
+db/                  schema.sql and seed.sql      (not reachable from the web)
+site/                the Laravel application
+  app/               backend code                 (not reachable from the web)
+  routes/api.php     every API route and who may call it
+  storage/           proofs, sessions, logs       (not reachable from the web)
+  .env               database password, settings  (not reachable from the web, never in git)
+  public/            web root: the site's DocumentRoot points here
+    index.php        Laravel's entry point, serves /api/v1/*
+    .htaccess        HTTPS only; everything that is not a file goes to index.php
 ```
+
+The web root must point at `site/public`. It needs SSH on the hosting, for `composer` and `php artisan`. Where the React app's files go is decided in the frontend plan.
 
 Settings the backend reads from `.env`:
 
 | Name | Meaning |
 |---|---|
-| `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASS` | Database connection, from the TransIP control panel |
-| `APP_ENV` | `local` or `production` |
+| `APP_KEY` | Secret key for cookies and sessions. Made once with `php artisan key:generate`. |
+| `APP_ENV` | `production` on the server |
+| `APP_DEBUG` | `false` on the server: error details stay in the log |
+| `APP_URL` | The address of the site, with `https://`. The login cookie only works for the web app at this address. |
+| `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` | Database connection, from the TransIP control panel |
 | `SCANNER_SIMULATOR` | `true` while the handheld is simulated. `false` switches the simulator and its helper endpoint off. |
+| `SESSION_SECURE_COOKIE` | `true` on the server: the login cookie travels over HTTPS only |
+
+Nothing that differs per machine is written in the code. `site/.env.example` lists every setting with a comment. After a change to `.env` on the server, run `php artisan config:cache`.
+
+There is no database on the development machine. The tests use a second database at TransIP, named in `site/.env.testing`, and rebuild it on every run. No database at TransIP can be reached from outside the hosting. The development machine reaches the test database through an SSH tunnel.
 
 On every database connection the backend runs `SET time_zone = '+00:00'` and switches strict SQL mode on. Without strict mode MySQL silently accepts an unknown status.
+
+Times are stored and sent in UTC, not in Dutch time. Dutch time repeats one hour every autumn and skips one every spring, so two scans in that night could not be put in order. A named time zone also needs time zone tables that a shared database often does not have. The screens show every time in Dutch time. Calendar days (due dates, wash dates) are Dutch calendar days.
+
+Laravel adds two tables of its own next to the 13 of `db/schema.sql`: `migrations` (which set-up steps ran) and `personal_access_tokens` (one row per logged-in handheld).
 
 Still to check in the TransIP control panel: the exact database engine and version (`SELECT VERSION();` in phpMyAdmin), the PHP version, and that HTTPS is on. The schema was loaded and tested on MariaDB 10.11 and MySQL 8.0, so either works.
 
@@ -181,10 +195,10 @@ What moves a mat from one status to the next:
 | Drop at customer | Driver | `out_for_delivery` | `at_customer` | Zone set, holder cleared |
 | Refused or undelivered | Driver | `out_for_delivery` | `refused` | Stays with the driver |
 | Pick up at customer | Driver | `at_customer` | `collected` | Zone cleared, holder = the driver |
-| Handover B complete | Driver gives, washing receives | `collected` | `in_washing` | Previous wash date = old current date, current wash date = today, wash count + 1 |
-| Handover C | Washing gives | `in_washing` | `ready` | Inventory's scan is optional and changes nothing |
+| Handover B complete | Driver gives, washing receives | `collected` | `in_washing` | Holder cleared. No wash is counted yet |
+| Handover C | Washing gives, after washing | `in_washing` | `ready` | Previous wash date = old current date, current wash date = today, wash count + 1. Inventory's scan is optional and changes nothing |
 | Return handover complete | Driver gives, inventory receives | `refused` | `ready` | No wash counted |
-| Rewash handover complete | Inventory gives, washing receives | `rewash` | `in_washing` | Wash dates and count as in Handover B |
+| Rewash handover complete | Inventory gives, washing receives | `rewash` | `in_washing` | The wash is counted when the mat leaves washing in Handover C |
 | Correction | Office | any | any | Note is required |
 
 After washing a mat is `ready`, so it passes the quality check again before it goes out.
@@ -209,7 +223,7 @@ How one handover runs:
 4. The receiver taps Done. The handover closes.
 5. Every mat with only one scan stays with the giver in its old status and appears in the office's handover issue list. The office corrects the status with a note. The correction is saved in the mat history.
 
-For Handover C step 2 is optional: the mat becomes `ready` when the washing house manager scans it out.
+For Handover C step 2 is optional: the mat becomes `ready` when the washing house manager scans it out. That scan is required. It confirms the mat is washed and ready to use, and it is the scan that counts the wash.
 
 A mat can be in only one open handover at a time.
 
@@ -313,36 +327,45 @@ All under `/api/v1`. All answer JSON. Roles: **O** office, **I** inventory, **D*
 
 | Method and path | Who | Does |
 |---|---|---|
-| `POST /auth/login` | all | `{username, password}` → the user with his role |
-| `POST /auth/logout` | all | Ends the session |
-| `GET /auth/me` | all | The logged-in user |
-| `GET, POST, PATCH /users` | O | Manage users. No delete, only switch off. |
-| `GET, POST, PATCH /areas` | O | Manage areas |
-| `GET, POST, PATCH /customers` | O | Manage customers |
-| `GET, POST, PATCH /customers/{id}/buildings` | O | Manage buildings |
-| `GET, POST, PATCH /buildings/{id}/zones` | O | Manage zones |
-| `GET, POST, PATCH /item-types` | O | Manage mat types |
-| `GET, POST, PATCH /contracts` | O | Manage contracts and their lines |
-| `POST /contracts/{id}/activate` | O | Creates the delivery tasks |
+| `POST /auth/login` | all | `{username, password}` → `{user, csrf_token}`. The login of the web app: it starts a session. |
+| `POST /auth/token` | I D W X | `{username, password}` → `{user, token}`. The login of a handheld: no session, the token goes in the header `Authorization: Bearer <token>` of every call. The office is refused with `403`. |
+| `POST /auth/logout` | all | Ends the session, or the token the call carries |
+| `GET /auth/me` | all | `{user, csrf_token}` of the logged-in user. With a token `csrf_token` is `null`. |
+| `GET, POST /users` · `PATCH /users/{id}` | O | Manage users. No delete, only switch off. A user cannot switch off or demote himself. |
+| `GET, POST /areas` · `PATCH /areas/{id}` | O | Manage areas |
+| `GET, POST /customers` · `PATCH /customers/{id}` | O | Manage customers |
+| `GET, POST /customers/{id}/buildings` · `PATCH /buildings/{id}` | O | Manage buildings |
+| `GET, POST /buildings/{id}/zones` · `PATCH /zones/{id}` | O | Manage zones |
+| `GET /item-types` | O I | List mat types. Inventory needs it to register a mat. |
+| `POST /item-types` · `PATCH /item-types/{id}` | O | Manage mat types |
+| `GET, POST /contracts` · `PATCH /contracts/{id}` | O | Manage contracts and their lines. Lines and start date only while draft. |
+| `POST /contracts/{id}/activate` | O | Creates the delivery tasks → `{contract, task_ids}` |
 | `POST /contracts/{id}/end` | O | Ends the contract, cancels open swap tasks |
-| `GET /items` | O I D W | Mat list. Filters: status, type, text search, page. The server narrows it to what the role may see. |
-| `GET /items/{id}` | O | One mat with its full history |
+| `GET /items` | O I D W | Mat list. Filters: `status`, `type`, `q`, `page`. The server narrows it to what the role may see. |
+| `GET /items/counts` | O | `{counts: {status: number}}`, the number of mats per status for the dashboard. A status no mat has is left out. |
+| `GET /items/{id}` | O W | One mat with its history. Washing gets the events without note, task and zone. |
 | `POST /items` | I | Register a mat |
-| `POST /items/ready` | I | `{reads}` → marks mats ready |
-| `POST /items/qc` | I | `{epc, result, note}` → pass, rewash, repair or scrap |
+| `POST /items/ready` | I | `{source, reads}` → marks mats ready |
+| `POST /items/qc` | I | `{source, epc, result, note}` → pass, rewash, repair or scrap |
 | `POST /items/{id}/correct` | O | `{status, holder_user_id, zone_id, note}` → correction, note required |
-| `POST /scan/lookup` | I D W X | `{reads}` → what each mat is. Changes nothing. |
-| `GET /tasks` | O D I X | Office: all, with filters. Driver: his own open tasks. Inventory and outbound: mats needed per driver. |
-| `POST /tasks` | O | Create a collection task |
+| `POST /scan/lookup` | I D W X | `{source, reads}` → what each mat is. Changes nothing. |
+| `GET /tasks` | O D I X | Office: all, with filters `status`, `type`, `assigned_to`. Driver: his own open tasks with zones, expected mats and mats in the building. Inventory and outbound: mats needed per driver. |
+| `POST /tasks` | O | `{contract_id, building_id, due_date}` → creates a collection task |
 | `PATCH /tasks/{id}` | O | Assign a driver, move the due date, cancel |
-| `POST /tasks/{id}/complete` | D | Close a stop, see above |
+| `POST /tasks/{id}/complete` | D | Close a stop, see above → `{task, next_task_id}` |
 | `GET /tasks/{id}/photo`, `/signature` | O | The proof files |
 | `GET /handovers` | all | Office: all, `?issues=1` for the issue list. Others: the handovers they give or receive. |
-| `POST /handovers` | I D W X | `{type, receiver_id}` → opens a handover as giver |
-| `POST /handovers/{id}/scan` | I D W X | `{reads}` → counts as give or receive, depending on who calls |
-| `POST /handovers/{id}/close` | receiver | Done. For Handover C the giver closes. |
+| `GET /handovers/{id}` | all | One handover with its pile. Others than the office: only their own. |
+| `GET /handover-receivers?type=...` | I D W X | The people the caller can pick as receiver for that handover type |
+| `POST /handovers` | I D W X | `{type, receiver_id}` → opens a handover as giver. An already open one between the same two people comes back. |
+| `POST /handovers/{id}/scan` | I D W X | `{source, reads}` → counts as give or receive, depending on who calls |
+| `POST /handovers/{id}/close` | all | Done. The receiver closes; for Handover C the giver may too; the office may close any. |
 | `POST /handovers/{id}/items/{itemId}/resolve` | O | `{note}` → marks a handover issue as handled |
 | `GET /sim/items` | I D W X | Simulator only, see below |
+
+Laravel checks every changing request (everything except `GET`) for forgery. A request passes when the browser marks it as same-origin, or when it carries the header `X-CSRF-Token` with the `csrf_token` from the login or from `GET /auth/me`. The web app sends that header on every changing request. The session cookie only works for requests from the site's own address.
+
+A call that carries a token, and the token login itself, get no session and no forgery check: a browser never adds a token to a call by itself, as it does with a cookie. A user has one token at a time, so a new login on a handheld ends the old one. A token stops after 12 hours, at logout, or at the next call after the user is switched off. Both logins count their failed tries together.
 
 Errors use the HTTP status and one shape:
 
@@ -350,7 +373,7 @@ Errors use the HTTP status and one shape:
 { "error": { "code": "wrong_status", "message": "MOCK-0002 is ready, not qc_passed." } }
 ```
 
-`401` not logged in · `403` wrong role or not your task · `404` not found · `409` already done or closed · `422` input not valid.
+`401` not logged in · `403` wrong role, not yours, or failed forgery check · `404` not found · `405` wrong method · `409` already done, closed, duplicate or wrong status · `422` input not valid · `429` too many login tries.
 
 ## Scanner simulator
 
@@ -387,13 +410,18 @@ Every mock tag id starts with `4D4F434B`, which is "MOCK" in hex. A mock mat is 
 
 ### First login
 
-No user is seeded, because a password must not sit in a file in git. After loading the schema, the first office user is created once on the server with a command that asks for the password. That user then adds everyone else in the office console.
+No user is seeded, because a password must not sit in a file in git. After the tables are built, the first office user is created once on the server:
+
+    php artisan laundry:office-user
+
+The command asks for the name, the username and the password (10 to 72 characters and at most 72 bytes, hidden while typing). That user then adds everyone else in the office console.
 
 ## Security
 
 - **HTTPS only.** Plain HTTP redirects to HTTPS.
-- **Passwords** are stored only as a hash (PHP `password_hash`). Login is limited to a few tries per minute per username and address.
+- **Passwords** are stored only as a hash (bcrypt, through Laravel's `Hash`). Login is limited to 5 failed tries per minute per username and address.
 - **Sessions** use a cookie that scripts cannot read (`HttpOnly`, `Secure`, `SameSite=Lax`), and every changing request carries a CSRF token. The session id is renewed at login. A user who is switched off is logged out at his next call.
+- **Handheld tokens** are stored only as a hash, one per user, and stop after 12 hours. The office role cannot get one, so office rights never travel in a token.
 - **Role and ownership are checked on the server for every call.** A driver asking for another driver's task gets `403`, whatever the screen shows.
 - **All SQL uses prepared statements.** No value from a request is pasted into a query.
 - **Uploads:** only JPEG for the photo and PNG for the signature, checked by content and not by file name, with a size limit. Files get a server-made name and live outside the web root. They are served only through the API, to the office.
@@ -411,7 +439,7 @@ These fill gaps the three documents leave open.
 | One task is one visit to one building, with one photo and one signature | FEATURES says "per stop" |
 | The driver picks the zone before he scans the mats he drops there | The contract counts mats per zone |
 | Refused mats go back to inventory through a two-sided handover, like the others | FLOW says "back to inventory" but names no handover |
-| Rewash mats go to washing through a two-sided handover, and that wash is counted | FLOW shows the arrow but no rule |
+| Rewash mats go to washing through a two-sided handover. The wash is counted when the mat leaves washing | FLOW shows the arrow but no rule |
 | A stop that does not match the contract can be closed with a note | Otherwise one missing mat blocks the driver |
 | Photos and signatures are for the office only | Not stated |
 | A lookup does not show which customer a mat is at | Not stated |
