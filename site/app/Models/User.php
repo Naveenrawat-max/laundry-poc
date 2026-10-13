@@ -1,32 +1,24 @@
 <?php
+/** A person who logs in. One role per user. The password is stored only as a hash and never leaves the server. */
+declare(strict_types=1);
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
-use Database\Factories\UserFactory;
-use Illuminate\Database\Eloquent\Attributes\Fillable;
-use Illuminate\Database\Eloquent\Attributes\Hidden;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['name', 'email', 'password'])]
-#[Hidden(['password', 'remember_token'])]
-class User extends Authenticatable
+final class User extends Authenticatable
 {
-    /** @use HasFactory<UserFactory> */
-    use HasFactory, Notifiable;
+    // Not used yet: it is what lets the handheld log in with a token later, without a new build.
+    use HasApiTokens;
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-        ];
-    }
+    public const ROLES = ['office', 'inventory', 'driver', 'washing', 'outbound'];
+
+    /** The schema names the column password_hash. Laravel's login finds the hash through this name. */
+    protected $authPasswordName = 'password_hash';
+
+    /** Exactly what the API shows of a user. */
+    protected $visible = ['id', 'name', 'username', 'role', 'is_active'];
+
+    protected $casts = ['is_active' => 'boolean'];
 }
