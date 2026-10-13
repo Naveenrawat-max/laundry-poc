@@ -28,4 +28,9 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
         Route::patch("/$resource/{id}", [C\RefdataController::class, 'update'])->defaults('resource', $resource)->middleware('role:office');
     }
 
+
+    Route::get('/users', [C\UserController::class, 'index'])->middleware('role:office');
+    Route::post('/users', [C\UserController::class, 'store'])->middleware('role:office');
+    Route::patch('/users/{id}', [C\UserController::class, 'update'])->middleware('role:office');
+
 });
