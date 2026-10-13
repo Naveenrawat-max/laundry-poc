@@ -1,6 +1,6 @@
 # Feature list
 
-Version: 0.2.1
+Version: 0.2.2
 
 RFID mat tracking for Proti. Proti rents door mats to its customers, delivers and collects them with its own drivers, and washes them in its own washing house. The flow these features follow is drawn in [FLOW.md](FLOW.md).
 
@@ -69,9 +69,9 @@ Every user logs in on the C72. The role of the user decides which screens open a
 
 ### Washing house manager
 
-- **Receive:** scan in the mats the delivery guy hands over. This scan moves the old "current washing date" to "previous washing date", sets the current washing date to today, and adds 1 to the washing cycle count. Scanning the same handover again adds nothing.
+- **Receive:** scan in the mats the delivery guy hands over.
 - **In washing:** list of mats currently in the washing house.
-- **Hand over to inventory:** scan out the washed mats.
+- **Hand over to inventory:** after washing, scan out the washed mats. This scan is required. It confirms the mats are ready to use, moves the old "current washing date" to "previous washing date", sets the current washing date to today, and adds 1 to the washing cycle count. Scanning the same handover again adds nothing.
 
 ### Outbound (optional)
 

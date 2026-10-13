@@ -1,10 +1,12 @@
 # Proposed flow
 
-Version: 0.1.6
+Version: 0.1.7
 
 Proposed mat lifecycle for the RFID laundry POC. Defaults that still need client confirmation are listed under the diagram.
 
 ![Proposed flow](flow-0.1.6.png)
+
+> The picture still shows the wash count at Handover B. It moves to Handover C; the Mermaid source below is right. Render the picture again before it is shown to the client.
 
 <details>
 <summary>Mermaid source for flow-0.1.6.png</summary>
@@ -34,7 +36,7 @@ flowchart LR
 
     subgraph WASH["4 WASHING"]
         direction TB
-        INW["In washing<br/>previous date = old current date<br/>current date = today<br/>cycle +1"]
+        INW["In washing"]
     end
 
     BACK(["Back to 1 INVENTORY<br/>Ready to use"])
@@ -43,7 +45,7 @@ flowchart LR
     INV -- "Handover A<br/>inventory scans out<br/>driver scans in" --> SITE
     SITE -- "D+n reached" --> LOG
     LOG -- "Handover B<br/>driver scans out<br/>washing scans in" --> WASH
-    WASH -- "Handover C<br/>washing scans out<br/>inventory scans in<br/>(optional)" --> BACK
+    WASH -- "Handover C<br/>washing scans out (required)<br/>previous date = old current date<br/>current date = today, cycle +1<br/>inventory scans in (optional)" --> BACK
 
     classDef side stroke-dasharray:4 3
 ```
@@ -53,7 +55,7 @@ flowchart LR
 ## Rules the diagram does not show
 
 - A mat moves at a handover only when both sides have scanned it. A mat scanned by one side stays with the giver and is flagged.
-- Wash count goes up once, at the washing manager's scan in Handover B. A re-scan adds nothing.
+- Wash count goes up once, at the washing manager's scan after washing, in Handover C. That scan is required. A re-scan adds nothing.
 - Either tag heard means the mat is present. Primary and secondary matter only at registration and tag replacement.
 
 ## Defaults to confirm with the client
