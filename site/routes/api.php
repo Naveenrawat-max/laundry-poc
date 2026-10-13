@@ -21,4 +21,10 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     Route::post('/scan/lookup', [C\ScanController::class, 'lookup'])->middleware($scanners);
     Route::get('/sim/items', [C\ScanController::class, 'simItems'])->middleware($scanners);
     Route::post('/items', [C\ItemController::class, 'store'])->middleware('role:inventory');
+
+    Route::get('/items', [C\ItemController::class, 'index'])->middleware('role:office,inventory,driver,washing');
+    Route::post('/items/ready', [C\ItemController::class, 'ready'])->middleware('role:inventory');
+    Route::post('/items/qc', [C\ItemController::class, 'qc'])->middleware('role:inventory');
+    Route::get('/items/{id}', [C\ItemController::class, 'show'])->middleware('role:office,washing');
+    Route::post('/items/{id}/correct', [C\ItemController::class, 'correct'])->middleware('role:office');
 });
