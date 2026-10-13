@@ -1,5 +1,5 @@
 <?php
-/** The API routes, all under /api/v1. Only the login is open; "role:" says which roles may call a route. */
+/** The API routes, all under /api/v1. Only the two logins are open; "role:" says which roles may call a route. */
 declare(strict_types=1);
 
 use App\Http\Controllers as C;
@@ -10,6 +10,7 @@ Route::pattern('id', '\d{1,18}');
 Route::pattern('itemId', '\d{1,18}');
 
 Route::post('/auth/login', [C\AuthController::class, 'login']);
+Route::post('/auth/token', [C\AuthController::class, 'token']);
 
 // Everything below needs a logged-in user who is still switched on. A route without its own "role:" is open to all roles.
 Route::middleware(['auth:sanctum', 'role'])->group(function () {
@@ -37,6 +38,7 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
     Route::post('/items', [C\ItemController::class, 'store'])->middleware('role:inventory');
 
     Route::get('/items', [C\ItemController::class, 'index'])->middleware('role:office,inventory,driver,washing');
+    Route::get('/items/counts', [C\ItemController::class, 'counts'])->middleware('role:office');
     Route::post('/items/ready', [C\ItemController::class, 'ready'])->middleware('role:inventory');
     Route::post('/items/qc', [C\ItemController::class, 'qc'])->middleware('role:inventory');
     Route::get('/items/{id}', [C\ItemController::class, 'show'])->middleware('role:office,washing');

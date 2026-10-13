@@ -209,6 +209,14 @@ final class ItemController extends Controller
     }
 
     /** One mat with its history. */
+    /** How many mats are in each status, for the dashboard. A status no mat has is left out. */
+    public function counts(): array
+    {
+        $counts = array_column(rows('SELECT status, COUNT(*) AS n FROM items GROUP BY status'), 'n', 'status');
+        // An object also when there is no mat yet: an empty PHP array would be sent as a list.
+        return ['counts' => (object) array_map('intval', $counts)];
+    }
+
     public function show(Request $request, int $id): array
     {
         $item = row(self::OFFICE_SELECT . ' WHERE i.id = ?', [$id]);

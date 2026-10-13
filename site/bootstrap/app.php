@@ -3,6 +3,7 @@
 
 use App\Http\Middleware\ApiHeaders;
 use App\Http\Middleware\Role;
+use App\Http\Middleware\WebAppSession;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -18,7 +19,8 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         // The web app logs in with a session cookie. Sanctum adds the session and the forgery check to its API calls.
-        $middleware->statefulApi();
+        // WebAppSession is Sanctum's own check with one more rule: a handheld's token call gets neither.
+        $middleware->api(prepend: [WebAppSession::class]);
         // On every request and not in the "api" group: Laravel runs the login check before the rest of that group,
         // so a refused login (401) or an unknown path would leave without the headers.
         $middleware->append(ApiHeaders::class);

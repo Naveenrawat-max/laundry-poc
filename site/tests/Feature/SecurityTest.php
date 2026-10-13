@@ -43,7 +43,7 @@ final class SecurityTest extends ApiTestCase
     public function test_every_route_needs_a_login_and_the_right_role(): void
     {
         $guarded = array_filter($this->apiRoutes(), fn (?array $roles) => $roles !== null);
-        $this->assertCount(46, $guarded);
+        $this->assertCount(47, $guarded);
 
         foreach ($guarded as $name => $roles) {
             [$method, $path] = explode(' ', preg_replace('/\{\w+\}/', '1', $name));
@@ -58,10 +58,10 @@ final class SecurityTest extends ApiTestCase
         }
     }
 
-    public function test_only_login_is_open_without_a_session(): void
+    public function test_only_the_two_logins_are_open_without_a_login(): void
     {
         $open = array_keys(array_filter($this->apiRoutes(), fn (?array $roles) => $roles === null));
-        $this->assertSame(['POST /auth/login'], $open);
+        $this->assertSame(['POST /auth/login', 'POST /auth/token'], $open);
     }
 
     public function test_every_answer_carries_the_security_headers(): void

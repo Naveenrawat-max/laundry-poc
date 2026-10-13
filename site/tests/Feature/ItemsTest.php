@@ -149,6 +149,19 @@ final class ItemsTest extends ApiTestCase
         $this->assertSame(['id' => $this->users['driver'], 'name' => 'Driver'], $carried['holder']);
     }
 
+    public function test_the_office_gets_the_number_of_mats_per_status(): void
+    {
+        $this->setItems([5, 6], 'at_customer', null, 1);
+        $this->setItems([7], 'in_washing');
+        $this->loginAs('office');
+        // A status no mat has is left out.
+        $this->assertEquals(['counts' => ['ready' => 37, 'at_customer' => 2, 'in_washing' => 1]], $this->ok($this->api('GET', '/items/counts')));
+        $this->assertSame(37, $this->ok($this->api('GET', '/items/counts'))['counts']['ready']);   // a number, not a string
+
+        $this->loginAs('inventory');
+        $this->assertError(403, 'forbidden', $this->api('GET', '/items/counts'));
+    }
+
     public function test_a_search_for_percent_or_underscore_matches_them_literally(): void
     {
         DB::statement("UPDATE items SET sku = '50%OFF' WHERE sku = 'MOCK-0001'");
