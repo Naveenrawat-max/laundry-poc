@@ -1,6 +1,6 @@
 # Walkthrough: how the web app works, and how to test it end to end
 
-Version: 0.2.0
+Version: 0.3.0
 
 This document has two parts. The first says how the web app is used: every page of the office, every screen of each handheld, and the way back of a mat from the customer on day D + n. The second is the end-to-end test that was run on 13 October 2026 with 240 mats and 13 sites, written down so that anyone can run it again and compare.
 
@@ -97,6 +97,18 @@ The office works on a computer. The menu on top has five entries: Workflow, Dash
 
 The usual order for a new customer is: Mat types and areas, Customers, Contracts, then Tasks every day.
 
+#### The reminder on every page
+
+A bar on top of every office page says what needs the office today. It is only there when there is something to say.
+
+| The bar says | When |
+|---|---|
+| "2 tasks are late." | Open tasks whose due date has passed. The bar is red. |
+| "3 tasks are due today, 1 without a driver." | Open tasks that are due today, and how many of them nobody drives yet |
+| "1 task is due tomorrow and has no driver yet." | Open tasks for tomorrow that still need a driver |
+
+"Open the tasks" in the bar goes to the Tasks page. The number of late tasks and tasks due today also stands in the title of the browser tab, for example "(3) Proti mat tracking", so it is seen while the office works in another tab. The bar looks for news once a minute.
+
 #### Workflow
 
 A page that explains the loop in plain words, for someone who is new. Nothing to click.
@@ -107,7 +119,7 @@ The first page to open every morning. It refreshes by itself every 30 seconds.
 
 | Block | What it shows | Click |
 |---|---|---|
-| In inventory, On a van, At customers, In washing | How many mats are in each place, out of all mats that are not scrapped | Opens the mat list, filtered on one status of that place |
+| In inventory, On a van, At customers, In washing | How many mats are in each place, out of all mats that are not scrapped | Opens the mat list with exactly the mats in that place |
 | Open tasks | All open tasks. Below it: how many are due today. | Opens Tasks |
 | Not assigned yet | Open tasks without a driver | Opens Tasks |
 | Handover issues | Mats that only one side scanned in a closed handover | Opens Handovers, view Issues |
@@ -195,11 +207,12 @@ Above the list: a filter on type (all, deliveries, swaps, collections) and on st
 | Take it back | Pick "No driver yet" | "Task taken back from the driver." It disappears from the handheld. |
 | Move the date | "Move", pick the new date, save | Only this one task moves |
 | Cancel | "Cancel". A dialog says what cancelling does. | The task disappears from the driver's list. It cannot be opened again, and no next swap is planned from it. |
-| Make a collection | "New collection": the contract, the building, the due date | A task where the driver only picks mats up. Only a contract that was started can be picked. |
+| Make a collection | "New task", kind "Collection": the contract, the building, the due date | A task where the driver only picks mats up. Only a contract that was started can be picked. |
+| Plan a swap by hand | "New task", kind "Swap": the contract, the building, the due date | A swap like any other: the driver lays clean mats and picks up the used ones, and closing it plans the next swap. Only an active contract can be picked, and only for a building that has no open delivery or swap. |
 | Look at the proof | "Proof" in the row of a done task | The photo, the signature, who signed, which driver, when, and the driver's note |
 
 > [!IMPORTANT]
-> Cancelling a swap stops the repeat for that building: the next swap is only planned when a stop is closed. There is no button to make a swap by hand. When only the date is wrong, use "Move", not "Cancel".
+> Cancelling a swap stops the repeat for that building: the next swap is only planned when a stop is closed. When only the date is wrong, use "Move", not "Cancel". To start the visits again after a cancel, plan a swap by hand with "New task".
 
 #### Operations, Mats
 
@@ -208,7 +221,7 @@ Every mat, where it is now, and everything that ever happened to it.
 | Do | How |
 |---|---|
 | Find a mat | Type a part of the SKU or of the tag id in the search box. The search starts when the typing stops. |
-| Filter | Pick a status, a mat type, or both |
+| Filter | Pick a status or a place ("In inventory" and "On a van" are several statuses at once), a mat type, or both |
 | Page through | 50 mats per page, the page numbers are below the list |
 | See where a mat is | The column "Where": "With (driver)", or customer, building and zone, or "Washing house", "Inventory", "Gone" |
 | See how often it was washed | The columns "Washes" and "Last wash" |
@@ -284,7 +297,9 @@ Example with n = 7:
 
 #### 1. How the office gets to know
 
-The app sends no email and no message. The office sees it on two pages.
+The app sends no email and no text message. The office sees it inside the app, in three places.
+
+**On every page**, the reminder bar on top: it says how many tasks are late, how many are due today, and how many are due tomorrow and still have no driver. The same number stands in the title of the browser tab.
 
 **On the Dashboard**, from the minute the stop is closed:
 
@@ -393,7 +408,7 @@ The mat is back on the shelf. Before it goes out again it passes the quality che
 | The driver closes the stop before its due date | Allowed. The next swap is n days after the day of closing. |
 | The office moves the due date of a swap | Only that task moves. The swap after it is still counted from the day the stop is closed. |
 | The office changes "Days between swaps" on an active contract | Every open swap of that contract moves by the difference |
-| The office cancels a swap | No next swap is planned from it. The repeat for that building stops. The mats stay at the customer. |
+| The office cancels a swap | No next swap is planned from it. The repeat for that building stops and the mats stay at the customer, until the office plans a swap by hand with "New task". |
 | The office ends the contract | Its open swaps are cancelled. The mats stay at the customer until a collection task brings them back. |
 | A collection is closed | The driver only picks up. No next swap is planned. The handheld says "Nothing further is planned for this building." |
 
@@ -673,7 +688,7 @@ On the driver's stop the mats are not scanned in the simulation: the driver pick
 | Fewer mats laid than the contract says | The stop cannot be closed without a note | The driver |
 | A mat that should be picked up is not found | The stop cannot be closed without a note. The mat stays "At the customer". | The driver writes the note, the office corrects the mat |
 | A stop without photo or signature | The handheld refuses before anything is sent | The driver |
-| A swap is not done on its day | It gets the label "Late" and stays open | The office: move it, or give it to another driver |
+| A swap is not done on its day | It gets the label "Late", stays open, and the red reminder bar counts it on every office page | The office: move it, or give it to another driver |
 | A driver is ill | Nothing by itself | The office gives the open tasks to another driver, one by one |
 | The system and the real world disagree | Nothing by itself | The office corrects the mat's status, with a note |
 | Someone leaves the company | Nothing by itself | The office switches the user off. A task can only be given to an active driver. |
@@ -684,9 +699,9 @@ These are choices of this first version, written down so that nobody waits for t
 
 | Not there | What to do now |
 |---|---|
-| No email, text message or alert when a swap comes due or is late | Look at the Dashboard and the Tasks page every day |
+| No email or text message when a swap comes due or is late. The reminder is inside the app only. | Keep the app open in a browser tab: the bar and the number in the tab title say what is late and what is due today |
 | A new swap gets no driver by itself | The office assigns every task |
-| No button to make a delivery or swap task by hand | Tasks come from starting a contract and from closing a stop. Do not cancel a swap unless the visits must stop. |
+| No button to make a delivery task by hand | A delivery comes from starting a contract. For a building that has no visit planned, plan a swap by hand: at a swap the driver lays mats too. |
 | No route or order for a driver's stops | The driver's list is sorted by due date |
 | No calendar or week view of the tasks | Filter the Tasks page on "Swaps" and read the due dates |
 | A started contract cannot get other mats or zones | End it, collect the mats, and start a new contract |
@@ -805,7 +820,7 @@ Each step says what to do and what must be seen. All of it was done by clicking 
 | 35 | Mark handled, with a note | "No open issues." |
 | 36 | Mats, MOCK-0044, Correct status, In repair, with a reason | The mat is "In repair". History: "Corrected by the office", with the name and the note. |
 | 37 | Start a handover on a handheld and leave it open. Office, Handovers, open it, Close handover. | The dialog says what closing does. Closed. |
-| 38 | Tasks, New collection for Mock Supermarket West, then Cancel it | The task appears, the dialog says what cancelling does, the task is cancelled. |
+| 38 | Tasks, New task, kind Collection, for Mock Supermarket West, then Cancel it | The task appears, the dialog says what cancelling does, the task is cancelled. |
 | 39 | Tasks, Done, Proof | Photo and signature of the stop, who signed, which driver. |
 | 40 | Customers, Mock Garage BV: add a building and a zone. Users: add a driver. | Both are in their lists at once. |
 

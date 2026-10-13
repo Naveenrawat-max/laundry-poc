@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.4.2
+Version: 0.4.3
 
 System design for the first build of the Proti mat tracking POC. It follows [POC.md](POC.md), [FEATURES.md](FEATURES.md) and [FLOW.md](FLOW.md). The database is in [db/schema.sql](db/schema.sql), the mock data in [db/seed.sql](db/seed.sql).
 
@@ -240,6 +240,7 @@ A mat can be in only one open handover at a time.
 6. On closing, the system creates the **swap task** for the same building, due on D + n. It sits in the office task list until the office assigns it.
 7. At the swap the driver drops clean mats and picks up the used ones. The pick-up screen compares his scan with the mats the system knows are in that building: found, missing, not on the list. Photo and signature again. Closing creates the next swap task.
 8. When a contract ends, the office creates a **collection task**: pick up only, and no next task.
+9. A cancelled task plans no next swap, so the visits to that building stop. The office starts them again with a **swap made by hand**. It is allowed only while the contract is active and the building has no open delivery or swap, so a building never has two visits planned.
 
 The expected mats of a stop are the contract lines of that building. A stop that does not match (a mat missing at pick-up, fewer mats dropped) can still be closed, but only with a note. The missing mat stays `at_customer`, so it is expected again at the next swap.
 
@@ -344,7 +345,7 @@ All under `/api/v1`. All answer JSON. Roles: **O** office, **I** inventory, **D*
 | `GET, POST /contracts` · `PATCH /contracts/{id}` | O | Manage contracts and their lines. Lines and start date only while draft. |
 | `POST /contracts/{id}/activate` | O | Creates the delivery tasks → `{contract, task_ids}` |
 | `POST /contracts/{id}/end` | O | Ends the contract, cancels open swap tasks |
-| `GET /items` | O I D W | Mat list. Filters: `status`, `type`, `q`, `page`. The server narrows it to what the role may see. |
+| `GET /items` | O I D W | Mat list. Filters: `status`, `type`, `q`, `page`. `status` takes one status or several with commas between, for example all five inventory statuses. The server narrows it to what the role may see. |
 | `GET /items/counts` | O | `{counts: {status: number}}`, the number of mats per status for the dashboard. A status no mat has is left out. |
 | `GET /items/{id}` | O W | One mat with its history. Washing gets the events without note, task and zone. |
 | `POST /items` | I | Register a mat |
@@ -353,7 +354,7 @@ All under `/api/v1`. All answer JSON. Roles: **O** office, **I** inventory, **D*
 | `POST /items/{id}/correct` | O | `{status, holder_user_id, zone_id, note}` → correction, note required |
 | `POST /scan/lookup` | I D W X | `{source, reads}` → what each mat is. Changes nothing. |
 | `GET /tasks` | O D I X | Office: all, with filters `status`, `type`, `assigned_to`. Driver: his own open tasks with zones, expected mats and mats in the building. Inventory and outbound: mats needed per driver. |
-| `POST /tasks` | O | `{contract_id, building_id, due_date}` → creates a collection task |
+| `POST /tasks` | O | `{type, contract_id, building_id, due_date}` → creates a task by hand. `type` is `collection` (the default) or `swap`. A swap needs an active contract and a building without an open delivery or swap, else `409 not_active` or `409 already_planned`. |
 | `PATCH /tasks/{id}` | O | Assign a driver, move the due date, cancel |
 | `POST /tasks/{id}/complete` | D | Close a stop, see above → `{task, next_task_id}` |
 | `GET /tasks/{id}/photo`, `/signature` | O | The proof files |
