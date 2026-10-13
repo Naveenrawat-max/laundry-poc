@@ -201,4 +201,94 @@ final class HandoverController extends Controller
         }
         return $changed;
     }
+
+    // A mat in a closed handover with only one of its two scans, not handled yet by the office.
+    // In Handover C the receiver's scan is optional, so "given only" is normal there.
+    private const ISSUE = "h.status = 'closed' AND hi.resolved_at IS NULL
+        AND (hi.given_at IS NULL OR (hi.received_at IS NULL AND h.type <> 'washing_to_inventory'))";
+
+    public function close(Request $request, int $id): array
+    {
+        $user = $request->user();
+        return DB::transaction(function () use ($user, $id): array {
+            $handover = row('SELECT * FROM handovers WHERE id = ? FOR UPDATE', [$id]);
+            if ($handover === null) {
+                fail(404, 'not_found', 'No such handover.');
+            }
+            // The receiver says "done". In Handover C the receiver may never show up, so the giver may close too.
+            $mayClose = self::TYPES[$handover['type']]['two_sided']
+                ? [$handover['receiver_id']]
+                : [$handover['giver_id'], $handover['receiver_id']];
+            if ($user->role !== 'office' && !in_array($user->id, $mayClose, true)) {
+                fail(403, 'forbidden', 'Only the receiver closes this handover.');
+            }
+            if ($handover['status'] !== 'open') {
+                fail(409, 'closed', 'This handover is already closed.');
+            }
+            DB::update("UPDATE handovers SET status = 'closed', closed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'open'", [$id]);
+            return ['handover' => self::view($id)];
+        });
+    }
+
+    public function show(Request $request, int $id): array
+    {
+        $user = $request->user();
+        $handover = self::view($id);
+        $mine = in_array($user->id, [$handover['giver']['id'], $handover['receiver']['id']], true);
+        if ($user->role !== 'office' && !$mine) {
+            fail(403, 'forbidden', 'This is not your handover.');
+        }
+        return ['handover' => $handover];
+    }
+
+    public function index(Request $request): array
+    {
+        $user = $request->user();
+        $office = $user->role === 'office';
+        if ($office && $request->query('issues') === '1') {
+            return ['issues' => rows('SELECT h.id AS handover_id, h.type, h.closed_at, g.name AS giver_name, r.name AS receiver_name,
+                    hi.given_at, hi.received_at, i.id AS item_id, i.sku, t.name AS type_name, i.status
+                FROM handover_items hi
+                JOIN handovers h ON h.id = hi.handover_id
+                JOIN items i ON i.id = hi.item_id
+                JOIN item_types t ON t.id = i.item_type_id
+                JOIN users g ON g.id = h.giver_id
+                JOIN users r ON r.id = h.receiver_id
+                WHERE ' . self::ISSUE . ' ORDER BY h.closed_at DESC, i.sku')];
+        }
+        $where = $office ? '1 = 1' : '(h.giver_id = ? OR h.receiver_id = ?)';
+        $params = $office ? [] : [$user->id, $user->id];
+        // ponytail: the newest 100, no paging. Add paging when the office needs to look further back.
+        return ['handovers' => rows("SELECT h.id, h.type, h.status, h.created_at, h.closed_at,
+                h.giver_id, g.name AS giver_name, h.receiver_id, r.name AS receiver_name,
+                (SELECT COUNT(*) FROM handover_items hi WHERE hi.handover_id = h.id AND hi.given_at IS NOT NULL) AS given,
+                (SELECT COUNT(*) FROM handover_items hi WHERE hi.handover_id = h.id AND hi.received_at IS NOT NULL) AS received
+            FROM handovers h JOIN users g ON g.id = h.giver_id JOIN users r ON r.id = h.receiver_id
+            WHERE $where ORDER BY h.status = 'open' DESC, h.id DESC LIMIT 100", $params)];
+    }
+
+    /** The office marks one handover issue as handled, with a note. */
+    public function resolve(Request $request, int $id, int $itemId): array
+    {
+        $in = $request->validate(['note' => 'required|string|max:500']);
+        $resolved = DB::update('UPDATE handover_items hi JOIN handovers h ON h.id = hi.handover_id
+            SET hi.resolved_at = UTC_TIMESTAMP(), hi.resolved_by = ?, hi.resolution_note = ?
+            WHERE hi.handover_id = ? AND hi.item_id = ? AND ' . self::ISSUE,
+            [$request->user()->id, $in['note'], $id, $itemId]);
+        if ($resolved !== 1) {
+            fail(409, 'not_an_issue', 'This mat is not an open handover issue.');
+        }
+        return ['ok' => true];
+    }
+
+    /** The people a giver can pick as receiver for one handover type. */
+    public function receivers(Request $request): array
+    {
+        $in = $request->validate(['type' => 'required|in:' . implode(',', array_keys(self::TYPES))]);
+        $rule = self::TYPES[$in['type']];
+        if (!in_array($request->user()->role, $rule['giver'], true)) {
+            fail(403, 'forbidden', 'Your role cannot give in this handover.');
+        }
+        return ['rows' => rows('SELECT id, name FROM users WHERE role = ? AND is_active = 1 ORDER BY name', [$rule['receiver']])];
+    }
 }

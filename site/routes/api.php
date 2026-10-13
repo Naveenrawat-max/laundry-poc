@@ -30,4 +30,10 @@ Route::middleware(['auth:sanctum', 'role'])->group(function () {
 
     Route::post('/handovers', [C\HandoverController::class, 'open'])->middleware($scanners);
     Route::post('/handovers/{id}/scan', [C\HandoverController::class, 'scan'])->middleware($scanners);
+
+    Route::get('/handovers', [C\HandoverController::class, 'index']);
+    Route::get('/handovers/{id}', [C\HandoverController::class, 'show']);
+    Route::post('/handovers/{id}/close', [C\HandoverController::class, 'close']);
+    Route::post('/handovers/{id}/items/{itemId}/resolve', [C\HandoverController::class, 'resolve'])->middleware('role:office');
+    Route::get('/handover-receivers', [C\HandoverController::class, 'receivers'])->middleware($scanners);
 });

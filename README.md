@@ -13,7 +13,7 @@
 
 RFID mat tracking for Proti, a company that rents, delivers, collects and washes door mats.
 
-![Version](https://img.shields.io/badge/version-0.4.6-2563eb?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.4.7-2563eb?style=flat-square)
 ![Stage](https://img.shields.io/badge/stage-design-f59e0b?style=flat-square)
 ![Handheld](https://img.shields.io/badge/handheld-simulated-8b5cf6?style=flat-square)
 ![Data](https://img.shields.io/badge/data-mock%20mats-64748b?style=flat-square)
