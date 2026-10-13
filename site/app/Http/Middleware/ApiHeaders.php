@@ -13,6 +13,9 @@ final class ApiHeaders
     public function handle(Request $request, Closure $next): Response
     {
         $response = $next($request);
+        if (!$request->is('api/*')) {
+            return $response;   // Laravel's own pages keep their own headers
+        }
         $response->headers->set('X-Content-Type-Options', 'nosniff');
         $response->headers->set('Cache-Control', 'no-store');
         if (app()->isProduction()) {

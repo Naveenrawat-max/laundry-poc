@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Support\Scan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
@@ -186,6 +187,9 @@ final class TaskCompleteTest extends ApiTestCase
         $this->assertError(422, 'invalid_input', $this->complete($task, $this->stop(['drops' => $this->fullDrop(1, 2, 3), 'signed_name' => ''])));
         $this->assertError(422, 'invalid_input', $this->complete($task, ['source' => null] + $this->stop(['drops' => $this->fullDrop(1, 2, 3)])));
         $this->assertError(422, 'invalid_input', $this->complete($task, $this->stop(['drops' => 'everything'])));
+        // More tags than one scan may carry: refused before any of them is looked up.
+        $tooMany = array_map(fn (int $n) => sprintf('%08X', $n), range(1, Scan::MAX_READS + 1));
+        $this->assertError(422, 'invalid_input', $this->complete($task, $this->stop($note + ['refused' => $tooMany])));
 
         $this->assertSame(['out_for_delivery', 'out_for_delivery', 'out_for_delivery'],
             [$this->item(1)['status'], $this->item(2)['status'], $this->item(3)['status']]);

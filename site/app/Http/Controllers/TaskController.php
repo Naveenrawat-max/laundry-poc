@@ -262,6 +262,9 @@ final class TaskController extends Controller
         $refused = self::epcs($in, 'refused');
         $dropped = array_merge(...array_values($drops));
         $all = [...$dropped, ...$pickups, ...$refused];
+        if (count($all) > Scan::MAX_READS) {
+            fail(422, 'invalid_input', 'A stop takes at most ' . Scan::MAX_READS . ' mats.');
+        }
         if (count($all) !== count(array_unique($all))) {
             fail(422, 'duplicate_tag', 'A mat appears in more than one list of this stop.');
         }

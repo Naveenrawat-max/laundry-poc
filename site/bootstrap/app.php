@@ -19,7 +19,9 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         // The web app logs in with a session cookie. Sanctum adds the session and the forgery check to its API calls.
         $middleware->statefulApi();
-        $middleware->api(append: [ApiHeaders::class]);
+        // On every request and not in the "api" group: Laravel runs the login check before the rest of that group,
+        // so a refused login (401) or an unknown path would leave without the headers.
+        $middleware->append(ApiHeaders::class);
         $middleware->alias(['role' => Role::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
