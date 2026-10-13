@@ -133,4 +133,17 @@ abstract class ApiTestCase extends TestCase
         }
         return $taskIds;
     }
+
+    /** A real 8x8 image of the given kind ("jpeg" or "png") as an upload. $padBytes makes it report a bigger size. */
+    protected function proofFile(string $kind, int $padBytes = 0): \Illuminate\Http\UploadedFile
+    {
+        $file = \Illuminate\Http\UploadedFile::fake()->image($kind === 'jpeg' ? 'proof.jpg' : 'proof.png', 8, 8);
+        return $padBytes > 0 ? $file->size(intdiv($padBytes, 1024) + 1) : $file;
+    }
+
+    /** The EPCs of mock mats n, n, n. */
+    protected function epcs(int ...$mats): array
+    {
+        return array_map(fn (int $n) => $this->epc($n), $mats);
+    }
 }

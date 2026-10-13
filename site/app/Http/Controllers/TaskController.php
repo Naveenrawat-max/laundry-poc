@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
+use App\Support\Scan;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 final class TaskController extends Controller
 {
@@ -176,5 +181,238 @@ final class TaskController extends Controller
             }
             return ['task' => self::view($id)];
         });
+    }
+
+    private const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+
+    private const MAX_SIGNATURE_BYTES = 1024 * 1024;
+
+    /** A list of tag ids from the body of a stop, uppercase, each one once. */
+    private static function epcs(array $in, string $key): array
+    {
+        $list = $in[$key] ?? [];
+        if (!is_array($list) || !array_is_list($list)) {
+            fail(422, 'invalid_input', "$key must be a list of tag ids.");
+        }
+        return array_values(array_unique(array_map(fn ($epc) => Scan::hex($epc, $key), $list)));
+    }
+
+    /** The drops of a stop as zone id => tag ids. */
+    private static function drops(array $in): array
+    {
+        $drops = $in['drops'] ?? [];
+        if (!is_array($drops) || !array_is_list($drops)) {
+            fail(422, 'invalid_input', 'drops must be a list.');
+        }
+        $byZone = [];
+        foreach ($drops as $drop) {
+            $zoneId = is_array($drop)
+                ? filter_var($drop['zone_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]])
+                : false;
+            if ($zoneId === false) {
+                fail(422, 'invalid_input', 'Every drop needs zone_id and epcs.');
+            }
+            $byZone[$zoneId] = array_values(array_unique([...($byZone[$zoneId] ?? []), ...self::epcs($drop, 'epcs')]));
+        }
+        return $byZone;
+    }
+
+    /** An uploaded proof file, checked by its content and not by its name. */
+    private static function proof(Request $request, string $field, string $mime, int $maxBytes): UploadedFile
+    {
+        $file = $request->file($field);
+        if (!$file instanceof UploadedFile) {
+            fail(422, 'proof_required', "A $field is required to close a stop.");
+        }
+        // A file above PHP's own upload limit arrives broken, with one of these two error codes.
+        $refusedByPhp = in_array($file->getError(), [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true);
+        if ($refusedByPhp || $file->getSize() > $maxBytes) {
+            fail(422, 'file_too_big', "The $field is larger than " . intdiv($maxBytes, 1024 * 1024) . ' MB.');
+        }
+        if (!$file->isValid()) {
+            fail(422, 'proof_required', "A $field is required to close a stop.");
+        }
+        $path = $file->getRealPath();
+        $image = @getimagesize($path);   // warns on a broken file; "false" is all this code needs
+        if ((new \finfo(FILEINFO_MIME_TYPE))->file($path) !== $mime || !$image || $image['mime'] !== $mime) {
+            fail(422, 'wrong_file_type', "The $field must be a " . ($mime === 'image/jpeg' ? 'JPEG' : 'PNG') . ' image.');
+        }
+        return $file;
+    }
+
+    /** The driver closes a stop: the mats he dropped, picked up and got refused, a photo and a signature. */
+    public function complete(Request $request, int $id): array
+    {
+        // Sent as a form: the two files, plus the stop itself as JSON in the field "payload".
+        $in = json_decode((string) $request->input('payload'), true);
+        if (!is_array($in)) {
+            fail(422, 'invalid_input', 'The field payload must hold the stop as JSON.');
+        }
+        $user = $request->user();
+        $source = Scan::source($in);
+        $text = Validator::make($in, [
+            'signed_name' => 'required|string|max:120',
+            'issue_note' => 'nullable|string|max:500',
+        ])->validate();
+        $signedName = trim($text['signed_name']);
+        $note = trim((string) ($text['issue_note'] ?? ''));
+        $note = $note === '' ? null : $note;   // a note of spaces is no note
+        $drops = self::drops($in);
+        $pickups = self::epcs($in, 'pickups');
+        $refused = self::epcs($in, 'refused');
+        $dropped = array_merge(...array_values($drops));
+        $all = [...$dropped, ...$pickups, ...$refused];
+        if (count($all) !== count(array_unique($all))) {
+            fail(422, 'duplicate_tag', 'A mat appears in more than one list of this stop.');
+        }
+        $photo = self::proof($request, 'photo', 'image/jpeg', self::MAX_PHOTO_BYTES);
+        $signature = self::proof($request, 'signature', 'image/png', self::MAX_SIGNATURE_BYTES);
+
+        $saved = [];
+        try {
+            return DB::transaction(function () use ($id, $user, $source, $signedName, $note, $drops, $dropped, $pickups, $refused, $all, $photo, $signature, &$saved): array {
+                $task = row('SELECT t.*, c.status AS contract_status, c.swap_interval_days
+                    FROM tasks t JOIN contracts c ON c.id = t.contract_id WHERE t.id = ? FOR UPDATE', [$id]);
+                if ($task === null) {
+                    fail(404, 'not_found', 'No such task.');
+                }
+                if ($task['assigned_to'] !== $user->id) {
+                    fail(403, 'forbidden', 'This task is not assigned to you.');
+                }
+                if ($task['status'] !== 'open') {
+                    fail(409, 'not_open', "This task is already {$task['status']}.");
+                }
+                if ($task['type'] === 'collection' && $dropped !== []) {
+                    fail(422, 'no_drops', 'A collection task only picks mats up.');
+                }
+
+                $items = Scan::itemsByEpc($all, true);
+                foreach ($all as $epc) {
+                    if (!isset($items[$epc])) {
+                        fail(422, 'unknown_tag', "No mat has the tag $epc.");
+                    }
+                }
+                $zoneIds = array_column(rows('SELECT id FROM zones WHERE building_id = ?', [$task['building_id']]), 'id');
+
+                // Hard rules: breaking one refuses the whole stop.
+                foreach (array_keys($drops) as $zoneId) {
+                    if (!in_array($zoneId, $zoneIds, true)) {
+                        fail(422, 'wrong_zone', "Zone $zoneId is not in this building.");
+                    }
+                }
+                foreach ([...$dropped, ...$refused] as $epc) {
+                    $item = $items[$epc];
+                    if ($item['status'] !== 'out_for_delivery' || $item['holder_user_id'] !== $user->id) {
+                        fail(409, 'wrong_status', "{$item['sku']} is not on your van as out_for_delivery.");
+                    }
+                }
+                foreach ($pickups as $epc) {
+                    $item = $items[$epc];
+                    if ($item['status'] !== 'at_customer' || !in_array($item['zone_id'], $zoneIds, true)) {
+                        fail(409, 'wrong_status', "{$item['sku']} is not at this building.");
+                    }
+                }
+
+                // Soft rule: drops and pick-ups should match the contract. If they do not, the driver must say why.
+                $wanted = [];
+                if ($task['type'] !== 'collection') {
+                    $lines = rows('SELECT l.zone_id, l.item_type_id, l.quantity FROM contract_lines l JOIN zones z ON z.id = l.zone_id
+                        WHERE l.contract_id = ? AND z.building_id = ?', [$task['contract_id'], $task['building_id']]);
+                    foreach ($lines as $line) {
+                        $wanted["{$line['zone_id']}:{$line['item_type_id']}"] = $line['quantity'];
+                    }
+                }
+                $got = [];
+                foreach ($drops as $zoneId => $epcs) {
+                    foreach ($epcs as $epc) {
+                        $key = "$zoneId:{$items[$epc]['item_type_id']}";
+                        $got[$key] = ($got[$key] ?? 0) + 1;
+                    }
+                }
+                $present = $task['type'] === 'delivery' ? [] : array_column(rows("SELECT i.epc FROM items i JOIN zones z ON z.id = i.zone_id
+                    WHERE i.status = 'at_customer' AND z.building_id = ?", [$task['building_id']]), 'epc');
+                $picked = $pickups;
+                // Compare as text. As numbers PHP would call the tag ids "1E3" and "1000" equal.
+                sort($present, SORT_STRING);
+                sort($picked, SORT_STRING);
+                ksort($wanted);
+                ksort($got);
+                if (($got !== $wanted || $picked !== $present) && $note === null) {
+                    fail(422, 'note_required', 'The mats do not match the contract. Add a note to close this stop.');
+                }
+
+                $move = function (array $item, string $to, ?int $holder, ?int $zone, string $event) use ($id, $user, $source): void {
+                    $moved = DB::update('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE id = ? AND status = ?',
+                        [$to, $holder, $zone, $item['id'], $item['status']]);
+                    if ($moved !== 1) {
+                        fail(409, 'wrong_status', "{$item['sku']} changed while the stop was being closed.");
+                    }
+                    // A drop is logged with the zone the mat went to, a pick-up with the zone it came from.
+                    Scan::log($item, $user->id, $event, $to, $source, ['task_id' => $id, 'zone_id' => $zone ?? $item['zone_id']]);
+                };
+                foreach ($drops as $zoneId => $epcs) {
+                    foreach ($epcs as $epc) {
+                        $move($items[$epc], 'at_customer', null, $zoneId, 'deliver');
+                    }
+                }
+                foreach ($refused as $epc) {
+                    $move($items[$epc], 'refused', $user->id, null, 'refuse');
+                }
+                foreach ($pickups as $epc) {
+                    $move($items[$epc], 'collected', $user->id, null, 'collect');
+                }
+
+                // Proof files get a server-made name and live on the "local" disk, outside the web root.
+                $stem = "task-$id-" . bin2hex(random_bytes(8));
+                foreach ([[$photo, "$stem.jpg"], [$signature, "$stem.png"]] as [$file, $name]) {
+                    if ($file->storeAs('proofs', $name, 'local') === false) {
+                        fail(500, 'storage', 'The proof could not be stored.');
+                    }
+                    $saved[] = "proofs/$name";
+                }
+                DB::update("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP(), photo_path = ?, signature_path = ?,
+                        signed_name = ?, issue_note = ? WHERE id = ? AND status = 'open'",
+                    ["$stem.jpg", "$stem.png", $signedName, $note, $id]);
+
+                // Today is D. The next swap is due on D + n. The unique key on previous_task_id allows only one.
+                $nextId = null;
+                if ($task['type'] !== 'collection' && $task['contract_status'] === 'active') {
+                    DB::insert("INSERT INTO tasks (type, contract_id, building_id, previous_task_id, due_date) VALUES ('swap', ?, ?, ?, ?)",
+                        [$task['contract_id'], $task['building_id'], $id, days_after(today_nl(), $task['swap_interval_days'])]);
+                    $nextId = (int) DB::getPdo()->lastInsertId();
+                }
+                return ['task' => self::view($id), 'next_task_id' => $nextId];
+            });
+        } catch (\Throwable $e) {
+            // Nothing was saved in the database, so nothing may stay on disk.
+            Storage::disk('local')->delete($saved);
+            throw $e;
+        }
+    }
+
+    public function photo(int $id): StreamedResponse
+    {
+        return self::proofFile($id, 'photo');
+    }
+
+    public function signature(int $id): StreamedResponse
+    {
+        return self::proofFile($id, 'signature');
+    }
+
+    /** A proof file, for the office only. $kind is "photo" or "signature". */
+    private static function proofFile(int $id, string $kind): StreamedResponse
+    {
+        $task = row('SELECT photo_path, signature_path FROM tasks WHERE id = ?', [$id]);
+        if ($task === null) {
+            fail(404, 'not_found', 'No such task.');
+        }
+        $name = $task[$kind . '_path'];
+        // basename(): even a tampered path in the database cannot leave the proofs folder.
+        $path = $name === null ? null : 'proofs/' . basename($name);
+        if ($path === null || !Storage::disk('local')->exists($path)) {
+            fail(404, 'no_proof', 'This task has no proof file.');
+        }
+        return Storage::disk('local')->response($path, null, ['Content-Type' => $kind === 'photo' ? 'image/jpeg' : 'image/png']);
     }
 }
