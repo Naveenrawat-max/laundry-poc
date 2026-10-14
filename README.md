@@ -13,7 +13,7 @@
 
 RFID mat tracking for Proti, a company that rents, delivers, collects and washes door mats.
 
-![Version](https://img.shields.io/badge/version-0.5.7-2563eb?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.5.8-2563eb?style=flat-square)
 ![Stage](https://img.shields.io/badge/stage-design-f59e0b?style=flat-square)
 ![Handheld](https://img.shields.io/badge/handheld-simulated-8b5cf6?style=flat-square)
 ![Data](https://img.shields.io/badge/data-mock%20mats-64748b?style=flat-square)
@@ -244,6 +244,7 @@ The full table of who sees what is in [ARCHITECTURE.md](ARCHITECTURE.md#users-an
 | [db/schema.sql](db/schema.sql) | Database schema, 13 tables |
 | [db/seed.sql](db/seed.sql) | Mock data: 40 mats, 2 customers, 2 draft contracts |
 | [db/demo.sql](db/demo.sql) | More mock data on top of the seed, for a demo: 200 more mats, 10 more buildings |
+| [docs/deploy.md](docs/deploy.md) | Putting it on TransIP step by step: decisions, checks, the install, a test after go-live, updates and rollback |
 | [docs/walkthrough.md](docs/walkthrough.md) | How the office, the inventory manager, the driver and the washing house use every screen, how a swap comes due on day D + n, and the end-to-end test with 240 mats, step by step |
 | [docs/superpowers/plans/2026-10-12-backend-api.md](docs/superpowers/plans/2026-10-12-backend-api.md) | Implementation plan for the backend API, plan 1 of 3 |
 
@@ -299,7 +300,7 @@ While working on the screens, `npm run dev` next to the PHP server reloads the p
 
 ## Put it on TransIP
 
-Needs a web hosting package with SSH, PHP 8.3+ and a web root that can be pointed at a subfolder. Every setting lives in `site/.env` on the server; nothing is hardcoded.
+Needs a web hosting package with SSH, PHP 8.3+ and a web root that can be pointed at a subfolder. Every setting lives in `site/.env` on the server; nothing is hardcoded. The full plan, with the checks before and after, an update and a rollback, is in [docs/deploy.md](docs/deploy.md).
 
 ```bash
 # over SSH, in a folder that is not reachable from the web
