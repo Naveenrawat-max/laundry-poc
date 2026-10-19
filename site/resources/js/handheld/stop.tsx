@@ -22,7 +22,7 @@ function toBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Prom
 }
 
 /** Any picture as a JPEG of at most 1600 pixels wide: what the API takes, and small enough for a phone connection. */
-async function photoFromFile(file: Blob): Promise<Blob> {
+export async function photoFromFile(file: Blob): Promise<Blob> {
   const image = await createImageBitmap(file)
   const scale = Math.min(1, 1600 / image.width)
   const canvas = document.createElement('canvas')
@@ -33,7 +33,7 @@ async function photoFromFile(file: Blob): Promise<Blob> {
 }
 
 /** A stand-in photo for a simulated stop, so a review does not need a camera. */
-function samplePhoto(label: string): Promise<Blob> {
+export function samplePhoto(label: string): Promise<Blob> {
   const canvas = document.createElement('canvas')
   canvas.width = 800
   canvas.height = 600
@@ -51,7 +51,7 @@ function samplePhoto(label: string): Promise<Blob> {
 }
 
 /** A box to sign in with a finger or the mouse. Gives a PNG, the kind of file the API takes for a signature. */
-function SignaturePad({ onChange }: { onChange: (png: Blob | null) => void }) {
+export function SignaturePad({ onChange }: { onChange: (png: Blob | null) => void }) {
   const ref = useRef<HTMLCanvasElement>(null)
   const drawing = useRef(false)
 
@@ -140,7 +140,7 @@ export function TasksScreen({ api, user }: Ctx) {
               {t.due_date < now ? <Chip tone="danger">Late</Chip> : t.due_date === now ? <Chip tone="success">Today</Chip> : <Chip>{day(t.due_date)}</Chip>}
             </span>
             <span className="mt-0.5 block text-xs text-muted-foreground">
-              {t.customer_name}. {t.street}, {t.postcode} {t.city}
+              Recipient {t.customer_name}. {t.street}, {t.postcode} {t.city}
             </span>
             <span className="mt-1 block text-xs">{t.expected.map((e) => `${e.quantity} × ${e.type_name} at ${e.zone_name}`).join('. ') || 'Pick up only'}</span>
           </button>
@@ -193,7 +193,7 @@ function StopScreen({ api, user, stop, onLeave }: Ctx & { stop: Stop; onLeave: (
     return (
       <>
         <Alert tone="success" title="Stop closed">
-          {done.next_task_id ? 'The next swap is planned. The office will assign it.' : 'Nothing further is planned for this building.'}
+          {done.next_task_id ? 'The next swap is planned. The office will assign it.' : 'Nothing further is planned for this location.'}
         </Alert>
         <Button onClick={onLeave}>Back to my tasks</Button>
       </>
@@ -207,7 +207,7 @@ function StopScreen({ api, user, stop, onLeave }: Ctx & { stop: Stop; onLeave: (
           {TASK_TYPE[stop.type]}: {stop.building_name}
         </p>
         <p className="text-xs text-muted-foreground">
-          {stop.customer_name}. {stop.street}, {stop.postcode} {stop.city}
+          Recipient {stop.customer_name}. {stop.street}, {stop.postcode} {stop.city}
         </p>
         {(stop.contact_name || stop.contact_phone) && (
           <p className="mt-1 text-xs">
@@ -263,7 +263,7 @@ function StopScreen({ api, user, stop, onLeave }: Ctx & { stop: Stop; onLeave: (
             )}
           </div>
           {stop.in_building.length === 0 ? (
-            <Empty className="py-4">The system knows of no mat in this building.</Empty>
+            <Empty className="py-4">The system knows of no mat at this location.</Empty>
           ) : (
             <ul className="space-y-0.5">
               {stop.in_building.map((m) => (
@@ -308,7 +308,7 @@ function StopScreen({ api, user, stop, onLeave }: Ctx & { stop: Stop; onLeave: (
             Use a sample
           </Button>
         </div>
-        <Field label="Name of the person who signs">
+        <Field label="Recipient name">
           <Input value={signedName} onChange={(e) => setSignedName(e.target.value)} maxLength={120} />
         </Field>
         <SignaturePad onChange={setSignature} />

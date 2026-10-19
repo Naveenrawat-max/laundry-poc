@@ -12,8 +12,9 @@ final class ScanTest extends ApiTestCase
     private function newMat(array $over = []): array
     {
         return $over + ['source' => 'simulator', 'epc' => '4D4F434B00000000000000FF',
+            'epc_primary' => '4D4F434B00000000000000FF', 'epc_secondary' => '4D4F434B00000000000000FE',
             'tid_primary' => '4D4F434B000A0000000000FF', 'tid_secondary' => '4D4F434B000B0000000000FF',
-            'sku' => 'MOCK-0255', 'item_type_id' => 1];
+            'catalog_sku_id' => (int) DB::scalar('SELECT id FROM sku_catalog WHERE item_type_id = 1 ORDER BY id LIMIT 1'), 'item_type_id' => 1];
     }
 
     public function test_lookup_tells_what_each_mat_is_and_changes_nothing(): void
@@ -61,11 +62,11 @@ final class ScanTest extends ApiTestCase
         $this->assertError(422, 'invalid_tag', $this->api('POST', '/scan/lookup', ['source' => 'simulator', 'reads' => ['just a string']]));
     }
 
-    public function test_the_office_has_no_scanner(): void
+    public function test_the_office_can_use_demo_scanning_for_registration(): void
     {
         $this->loginAs('office');
-        $this->assertError(403, 'forbidden', $this->api('POST', '/scan/lookup', $this->reads(1)));
-        $this->assertError(403, 'forbidden', $this->api('GET', '/sim/items'));
+        $this->assertSame('found', $this->ok($this->api('POST', '/scan/lookup', $this->reads(1)))['results'][0]['result']);
+        $this->assertCount(40, $this->ok($this->api('GET', '/sim/items'))['items']);
     }
 
     public function test_the_simulator_can_hear_every_mat(): void
@@ -87,47 +88,89 @@ final class ScanTest extends ApiTestCase
 
     public function test_register_stores_a_new_mat_and_writes_history(): void
     {
-        $this->loginAs('inventory');
+        $this->loginAs('office');
         $item = $this->ok($this->api('POST', '/items', $this->newMat(['epc' => '4d4f434b00000000000000ff'])))['item'];
-        $this->assertSame(['MOCK-0255', 'registered', 0], [$item['sku'], $item['status'], $item['wash_count']]);
+        $this->assertMatchesRegularExpression('/^MAT-[0-9A-F]{16}$/', $item['sku']);
+        $this->assertSame(['ready', 0], [$item['status'], $item['wash_count']]);
+        $this->assertSame(9, (int) DB::table('sku_catalog')->where('id', $item['catalog_sku_id'])->value('untagged_quantity'));
+        $catalog = $this->ok($this->api('GET', '/sku-catalog?item_type_id=1'))['rows'];
+        $sku = array_values(array_filter($catalog, fn (array $sku) => $sku['id'] === $item['catalog_sku_id']))[0];
+        $this->assertSame([9, 1, 1, 10], [$sku['untagged_quantity'], $sku['tagged_quantity'], $sku['ready_quantity'], $sku['total_quantity']]);
 
-        $row = row("SELECT * FROM items WHERE sku = 'MOCK-0255'");
+        $row = row('SELECT * FROM items WHERE id = ?', [$item['id']]);
         $this->assertSame(['4D4F434B00000000000000FF', '4D4F434B000A0000000000FF', '4D4F434B000B0000000000FF'],
             [$row['epc'], $row['tid_primary'], $row['tid_secondary']]);
 
         $event = row('SELECT * FROM item_events WHERE item_id = ?', [$row['id']]);
-        $this->assertSame(['register', null, 'registered', 'simulator', $this->users['inventory']],
+        $this->assertSame(['register', null, 'ready', 'simulator', $this->users['office']],
             [$event['event_type'], $event['from_status'], $event['to_status'], $event['source'], $event['user_id']]);
     }
 
     public function test_register_refuses_broken_input(): void
     {
-        $this->loginAs('inventory');
+        $this->loginAs('office');
         $this->assertError(422, 'same_tid', $this->api('POST', '/items',
             $this->newMat(['tid_secondary' => '4D4F434B000A0000000000FF'])));
         $this->assertError(422, 'invalid_reference', $this->api('POST', '/items', $this->newMat(['item_type_id' => 999])));
-        $this->assertError(422, 'invalid_tag', $this->api('POST', '/items', $this->newMat(['epc' => 'XYZ'])));
-        $this->assertError(422, 'invalid_input', $this->api('POST', '/items', $this->newMat(['sku' => ''])));
+        $this->assertError(422, 'invalid_tag', $this->api('POST', '/items', $this->newMat(['epc_primary' => 'XYZ'])));
+        $this->assertError(422, 'invalid_input', $this->api('POST', '/items', $this->newMat(['catalog_sku_id' => null])));
         $this->assertSame(40, (int) DB::scalar('SELECT COUNT(*) FROM items'));
     }
 
     public function test_register_refuses_a_tag_or_sku_that_is_in_use(): void
     {
-        $this->loginAs('inventory');
-        $this->assertError(409, 'duplicate', $this->api('POST', '/items', $this->newMat(['epc' => $this->epc(1)])));
-        $this->assertError(409, 'duplicate', $this->api('POST', '/items', $this->newMat(['sku' => 'mock-0001'])));
+        $this->loginAs('office');
+        $this->assertError(409, 'duplicate', $this->api('POST', '/items', $this->newMat(['epc' => $this->epc(1), 'epc_primary' => $this->epc(1)])));
         // Mat 1's secondary TID offered as a primary TID: two unique keys alone would not catch this.
         $this->assertError(409, 'duplicate', $this->api('POST', '/items',
             $this->newMat(['tid_primary' => '4D4F434B000B000000000001'])));
         $this->ok($this->api('POST', '/items', $this->newMat()));
         $this->assertError(409, 'duplicate', $this->api('POST', '/items', $this->newMat()));   // sent twice
+        $this->assertSame(9, (int) DB::table('sku_catalog')->where('id', $this->newMat()['catalog_sku_id'])->value('untagged_quantity'));
     }
 
-    public function test_only_the_inventory_manager_registers(): void
+    public function test_only_the_office_registers(): void
     {
-        foreach (['office', 'driver', 'washing', 'outbound'] as $who) {
+        foreach (['inventory', 'driver', 'washing', 'outbound'] as $who) {
             $this->loginAs($who);
             $this->assertError(403, 'forbidden', $this->api('POST', '/items', $this->newMat()));
         }
+    }
+
+    public function test_catalog_has_ten_fixed_choices_per_type_and_rejects_wrong_or_inactive_choice(): void
+    {
+        $this->loginAs('office');
+        $catalog = $this->ok($this->api('GET', '/sku-catalog?item_type_id=1'))['rows'];
+        $this->assertGreaterThanOrEqual(10, count($catalog));
+        $this->assertSame([1], array_values(array_unique(array_column($catalog, 'item_type_id'))));
+        $wrong = (int) DB::scalar('SELECT id FROM sku_catalog WHERE item_type_id = 2 LIMIT 1');
+        $this->assertError(422, 'invalid_reference', $this->api('POST', '/items', $this->newMat(['catalog_sku_id' => $wrong])));
+        DB::table('sku_catalog')->where('id', $catalog[0]['id'])->update(['is_active' => 0]);
+        $this->assertError(422, 'invalid_reference', $this->api('POST', '/items', $this->newMat(['catalog_sku_id' => $catalog[0]['id']])));
+    }
+
+    public function test_common_epc_always_uses_first_tag_and_ignores_manual_override(): void
+    {
+        $this->loginAs('office');
+        $first = $this->ok($this->api('POST', '/items', $this->newMat(['epc' => '4D4F434B00000000000000FE'])))['item'];
+        $this->assertSame('4D4F434B00000000000000FF', $first['epc']);
+        $second = $this->ok($this->api('POST', '/items', $this->newMat([
+            'epc' => 'XYZ', 'epc_primary' => 'AAAA0001', 'epc_secondary' => 'AAAA0002',
+            'tid_primary' => 'BBBB0001', 'tid_secondary' => 'BBBB0002',
+        ])))['item'];
+        $this->assertSame('AAAA0001', $second['epc']);
+        $this->assertSame($first['catalog_sku_id'], $second['catalog_sku_id']);
+        $this->assertNotSame($first['sku'], $second['sku']);
+    }
+
+    public function test_mapping_without_stock_creates_nothing_and_does_not_go_negative(): void
+    {
+        $body = $this->newMat();
+        DB::table('sku_catalog')->where('id', $body['catalog_sku_id'])->update(['untagged_quantity' => 0]);
+        $this->loginAs('office');
+        $this->assertError(409, 'out_of_stock', $this->api('POST', '/items', $body));
+        $this->assertSame(40, DB::table('items')->count());
+        $this->assertSame(0, DB::table('item_events')->count());
+        $this->assertSame(0, (int) DB::table('sku_catalog')->where('id', $body['catalog_sku_id'])->value('untagged_quantity'));
     }
 }

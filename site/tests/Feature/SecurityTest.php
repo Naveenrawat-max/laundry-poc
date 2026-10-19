@@ -43,7 +43,7 @@ final class SecurityTest extends ApiTestCase
     public function test_every_route_needs_a_login_and_the_right_role(): void
     {
         $guarded = array_filter($this->apiRoutes(), fn (?array $roles) => $roles !== null);
-        $this->assertCount(47, $guarded);
+        $this->assertCount(61, $guarded);
 
         foreach ($guarded as $name => $roles) {
             [$method, $path] = explode(' ', preg_replace('/\{\w+\}/', '1', $name));

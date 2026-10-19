@@ -24,7 +24,7 @@ final class ItemsTest extends ApiTestCase
     {
         $this->setItems([1], 'registered');
         $this->setItems([2], 'repair');
-        $this->loginAs('inventory');
+        $this->loginAs('office');
         $out = $this->ok($this->api('POST', '/items/ready', $this->reads(1, 2)));
 
         $this->assertSame(['found', 'found'], array_column($out['results'], 'result'));
@@ -37,7 +37,7 @@ final class ItemsTest extends ApiTestCase
     public function test_ready_scanned_twice_changes_and_logs_once(): void
     {
         $this->setItems([1], 'registered');
-        $this->loginAs('inventory');
+        $this->loginAs('office');
         $this->ok($this->api('POST', '/items/ready', $this->reads(1)));
         $again = $this->ok($this->api('POST', '/items/ready', $this->reads(1)));
         $this->assertSame('found', $again['results'][0]['result']);
@@ -47,12 +47,23 @@ final class ItemsTest extends ApiTestCase
     public function test_ready_rejects_a_mat_in_another_status_and_an_unknown_tag(): void
     {
         $this->setItems([1], 'qc_passed');
-        $this->loginAs('inventory');
+        $this->loginAs('office');
         $out = $this->ok($this->api('POST', '/items/ready',
             ['source' => 'simulator', 'reads' => [['epc' => $this->epc(1)], ['epc' => 'AAAA0000']]]));
         $this->assertSame(['rejected', 'unknown'], array_column($out['results'], 'result'));
         $this->assertSame('MOCK-0001 is qc_passed, not registered or repair.', $out['results'][0]['reason']);
         $this->assertSame('qc_passed', $this->item(1)['status']);
+        $this->assertCount(0, $this->events(1));
+    }
+
+    public function test_only_office_releases_registered_mats(): void
+    {
+        $this->setItems([1], 'registered');
+        foreach (['inventory', 'driver', 'washing', 'outbound'] as $who) {
+            $this->loginAs($who);
+            $this->assertError(403, 'forbidden', $this->api('POST', '/items/ready', $this->reads(1)));
+        }
+        $this->assertSame('registered', $this->item(1)['status']);
         $this->assertCount(0, $this->events(1));
     }
 

@@ -1,9 +1,10 @@
-/** Users: who can log in, and in which role. A user is never deleted, only switched off. */
+/** Users: who can log in, and in which role. A person with no work yet can be removed. Anyone already on a scan is switched off instead. */
 import { useState } from 'react'
 
 import { Count, Empty, FormDialog, Load, PageHead, Toolbar } from '@/app/ui'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -22,7 +23,9 @@ export function UsersPage() {
   const { api, user: me } = useSession()
   const state = useLoad(() => api.get<{ rows: User[] }>('/users').then((r) => r.rows), [api])
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [removing, setRemoving] = useState<User | null>(null)
   const save = useAction()
+  const remove = useAction()
   const set = (patch: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...patch } : d))
   const isMe = draft?.id === me?.id
 
@@ -72,9 +75,12 @@ export function UsersPage() {
                     <TableCell className="font-mono text-xs">{u.username}</TableCell>
                     <TableCell>{ROLE[u.role]}</TableCell>
                     <TableCell>{u.is_active ? <Chip tone="success">Yes</Chip> : <Chip>Switched off</Chip>}</TableCell>
-                    <TableCell>
+                    <TableCell className="space-x-1 text-right">
                       <Button variant="ghost" size="sm" onClick={() => setDraft({ ...u, password: '' })}>
                         Edit
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => { remove.clear(); setRemoving(u) }}>
+                        Remove
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -124,6 +130,9 @@ export function UsersPage() {
           </label>
         )}
       </FormDialog>
+      <ConfirmDialog open={removing !== null} title={`Remove ${removing?.name ?? 'this person'}?`} confirmLabel="Remove" busyLabel="Removing" busy={remove.busy} error={remove.error} onCancel={() => { setRemoving(null); remove.clear() }} onConfirm={() => void remove.run(async () => { await api.del(`/users/${removing!.id}`); setRemoving(null); await state.reload() })}>
+        Someone who has already scanned, carried or been assigned work stays. Switch them off instead.
+      </ConfirmDialog>
     </>
   )
 }

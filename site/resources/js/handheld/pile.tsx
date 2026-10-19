@@ -1,6 +1,6 @@
 /** The pile panel: it stands in for the handheld's trigger. Tick the mats that are "in the pile", then scan. */
 import { CircleAlert, CircleCheck, CircleHelp, CircleX } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { StatusChip } from '@/app/ui'
 import { Alert } from '@/components/ui/alert'
@@ -41,6 +41,7 @@ export function PilePanel({
   single = false,
   scanLabel = 'Scan',
   onScan,
+  refreshToken = 0,
 }: {
   api: Api
   /** The statuses this step is meant for. Other mats can still be scanned, to see them refused. */
@@ -51,8 +52,15 @@ export function PilePanel({
   single?: boolean
   scanLabel?: string
   onScan: (epcs: string[]) => Promise<void>
+  /** Bump this after a quality result so each mat's state refreshes immediately. */
+  refreshToken?: number
 }) {
   const pile = usePile(api)
+  useEffect(() => {
+    if (refreshToken > 0) void pile.reload()
+    // reload identity is stable; the token is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshToken])
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [filter, setFilter] = useState<'fits' | 'all'>('fits')
   const scan = useAction()
@@ -150,7 +158,7 @@ export function PilePanel({
           {scan.error}
         </Alert>
       )}
-      <Button variant="solid" iconRight={null} className="mt-3 w-full" disabled={picked.size === 0 || scan.busy} onClick={() => void run()}>
+      <Button type="button" variant="solid" iconRight={null} className="mt-3 w-full" disabled={picked.size === 0 || scan.busy} onClick={() => void run()}>
         {scan.busy ? 'Scanning' : `${scanLabel}${single ? '' : ` ${picked.size} ${picked.size === 1 ? 'mat' : 'mats'}`}`}
       </Button>
     </section>

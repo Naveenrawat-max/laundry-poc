@@ -1,6 +1,8 @@
-/** Tasks: one visit to one building. The office assigns a driver, moves a date, cancels, and checks the proof of a closed stop. */
-import { useState } from 'react'
+/** Tasks: one visit to one customer location, with driver assignment, scheduling and proof. */
+import { Fragment, useState } from 'react'
+import { Link } from 'react-router'
 
+import { OrderProducts, OrderSummary, SwapDue } from '@/app/orders'
 import { Count, Empty, Fact, FormDialog, Load, PageHead, Toolbar } from '@/app/ui'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
@@ -12,11 +14,11 @@ import { Segmented } from '@/components/ui/segmented'
 import { Select } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useToast } from '@/components/ui/toast'
-import { message } from '@/lib/api'
+import { type Api, message } from '@/lib/api'
 import { useAction, useLoad } from '@/lib/hooks'
 import { TASK_TYPE, day, today, when } from '@/lib/labels'
 import { useSession } from '@/lib/session'
-import type { Contract, Task, User } from '@/lib/types'
+import type { Contract, Order, Stop, Task, User } from '@/lib/types'
 
 type StatusFilter = 'open' | 'done' | 'cancelled' | 'all'
 
@@ -27,11 +29,28 @@ const STATUS_OPTIONS = [
   { value: 'all', label: 'All' },
 ] as const
 
+/** Expanding a task fetches its location requirements and persisted linked order. */
+function TaskDetails({ api, task }: { api: Api; task: Task }) {
+  const detail = useLoad(() => api.get<{ task: Stop }>(`/tasks/${task.id}`).then((r) => r.task), [api, task.id])
+  const order = useLoad(() => task.order_id ? api.get<{ order: Order }>(`/orders/${task.order_id}`).then((r) => r.order) : Promise.resolve(null), [api, task.order_id])
+  return <div className="space-y-3 p-2">
+    <p className="font-medium">{task.customer_name} · {task.building_name}</p>
+    <p className="text-sm text-muted-foreground">{task.street}, {task.postcode} {task.city}{task.contact_name ? ` · ${task.contact_name}` : ''}{task.contact_phone ? ` · ${task.contact_phone}` : ''}</p>
+    <p className="text-sm">Task #{task.id} · Contract #{task.contract_id} · {TASK_TYPE[task.type]} due {day(task.due_date)}</p>
+    {task.issue_note && <p className="text-sm">Driver note: {task.issue_note}</p>}
+    {task.order_id ? <Load state={order}>{(linked) => linked && <><OrderSummary order={linked} /><OrderProducts order={linked} stage={linked.status === 'pending_qc' ? 'qc' : 'scan'} /><Link to={`${linked.type === 'delivery' ? '/ready-to-use' : '/pickup-orders'}?order=${linked.id}`} className="text-sm underline">Open {linked.number}</Link></>}</Load> : <Load state={detail}>{(stop) => <><p className="text-sm text-muted-foreground">No linked order. This task follows the contract requirements below.</p><div className="grid gap-4 sm:grid-cols-2">
+      <section><h3 className="mb-2 font-medium">Contract requirements</h3>{stop.expected.length ? <ul className="space-y-1 text-sm">{stop.expected.map((line) => <li key={`${line.zone_id}:${line.item_type_id}`}>{line.quantity} × {line.type_name} · {line.zone_name}</li>)}</ul> : <p className="text-sm text-muted-foreground">No delivery quantities required.</p>}</section>
+      <section><h3 className="mb-2 font-medium">Mats currently at this location</h3>{stop.in_building.length ? <ul className="space-y-2 text-sm">{stop.in_building.map((mat) => <li key={mat.id}><span className="flex flex-wrap items-center gap-x-3"><span className="font-mono">{mat.sku}</span><SwapDue date={mat.swap_due_date} /></span><span className="text-xs text-muted-foreground">{mat.type} · {stop.zones.find((zone) => zone.id === mat.zone_id)?.name}</span></li>)}</ul> : <p className="text-sm text-muted-foreground">No mats currently at this location.</p>}</section>
+    </div></>}</Load>}
+  </div>
+}
+
 export function TasksPage() {
   const { api } = useSession()
   const toast = useToast()
   const [status, setStatus] = useState<StatusFilter>('open')
   const [type, setType] = useState('')
+  const [expanded, setExpanded] = useState<number | null>(null)
   const query = new URLSearchParams({ ...(status !== 'all' ? { status } : {}), ...(type ? { type } : {}) }).toString()
   const tasks = useLoad(() => api.get<{ tasks: Task[] }>(`/tasks${query ? `?${query}` : ''}`).then((r) => r.tasks), [api, query], 20000)
   const drivers = useLoad(() => api.get<{ rows: User[] }>('/users').then((r) => r.rows.filter((u) => u.role === 'driver' && u.is_active)), [api])
@@ -76,13 +95,13 @@ export function TasksPage() {
 
   const buildings = (() => {
     const contract = contracts.find((c) => c.id === creating?.contract_id)
-    return [...new Map(contract?.lines.map((l) => [l.building_id, l.building_name])).entries()]
+    return [...new Map(contract?.lines.filter((l) => contract.building_id === null || l.building_id === contract.building_id).map((l) => [l.building_id, l.building_name])).entries()]
   })()
 
   return (
     <>
       <PageHead title="Tasks">
-        Every task is <span className="highlight">one visit to one building</span>. Give it a driver and it shows up on his handheld.
+        Every task is <span className="highlight">one visit to one location</span>. Give it a driver and it shows up on their handheld.
       </PageHead>
 
       <Toolbar info={<Count n={tasks.data?.length ?? 0} noun="task" />}>
@@ -116,7 +135,7 @@ export function TasksPage() {
               </TableHeader>
               <TableBody>
                 {rows.map((t) => (
-                  <TableRow key={t.id}>
+                  <Fragment key={t.id}><TableRow>
                     <TableCell className="whitespace-nowrap">
                       {day(t.due_date)}
                       {t.status === 'open' && t.due_date < now && (
@@ -125,11 +144,11 @@ export function TasksPage() {
                         </Chip>
                       )}
                     </TableCell>
-                    <TableCell>{TASK_TYPE[t.type]}</TableCell>
+                    <TableCell><button type="button" className="cursor-pointer rounded-sm text-left font-medium underline underline-offset-4 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50" aria-expanded={expanded === t.id} aria-controls={`task-details-${t.id}`} onClick={() => setExpanded((id) => id === t.id ? null : t.id)}>{TASK_TYPE[t.type]} #{t.id} · {expanded === t.id ? 'Hide details' : 'Details'}</button>{t.order_number && <span className="block text-xs text-muted-foreground">{t.order_number}</span>}</TableCell>
                     <TableCell>
                       <span className="block font-medium">{t.building_name}</span>
                       <span className="block text-xs text-muted-foreground">
-                        {t.customer_name}, {t.city} ({t.area_name})
+                        {t.customer_name}, {t.city}{t.area_name ? ` (${t.area_name})` : ''}
                       </span>
                     </TableCell>
                     <TableCell>
@@ -173,7 +192,7 @@ export function TasksPage() {
                         </Button>
                       )}
                     </TableCell>
-                  </TableRow>
+                  </TableRow>{expanded === t.id && <TableRow id={`task-details-${t.id}`}><TableCell colSpan={6}><TaskDetails api={api} task={t} /></TableCell></TableRow>}</Fragment>
                 ))}
               </TableBody>
             </Table>
@@ -201,7 +220,7 @@ export function TasksPage() {
         description={
           creating?.type === 'collection'
             ? 'The driver only picks mats up. Nothing is laid and no next swap is planned. Use it when a contract ends.'
-            : 'The driver lays clean mats and picks up the used ones. Use it for a building that has no visit planned, for example after its swap was cancelled. Closing it plans the next swap as usual.'
+            : 'The driver lays clean mats and picks up the used ones. Use it for a location that has no visit planned, for example after its swap was cancelled. Closing it plans the next swap as usual.'
         }
         submitLabel="Create task"
         busy={act.busy}
@@ -231,15 +250,15 @@ export function TasksPage() {
           <Select value={creating?.contract_id ?? ''} onChange={(e) => setCreating((c) => (c ? { ...c, contract_id: Number(e.target.value), building_id: '' } : c))} wrapperClassName="w-full" required>
             {contracts.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.customer_name} ({c.status})
+                {c.customer_name} · {c.building_name ?? 'Legacy multiple locations'} · Starts {day(c.start_date)} · D+{c.swap_interval_days} ({c.status})
               </option>
             ))}
           </Select>
         </Field>
-        <Field label="Building">
+        <Field label="Location">
           <Select value={creating?.building_id ?? ''} onChange={(e) => setCreating((c) => (c ? { ...c, building_id: Number(e.target.value) } : c))} wrapperClassName="w-full" required>
             <option value="" disabled>
-              Choose a building
+              Choose a location
             </option>
             {buildings.map(([id, name]) => (
               <option key={id} value={id}>
@@ -264,7 +283,7 @@ export function TasksPage() {
         onConfirm={() => void act.run(async () => api.patch(`/tasks/${cancelling!.id}`, { status: 'cancelled' }).then(finish))}
         onCancel={close}
       >
-        {cancelling && `The ${TASK_TYPE[cancelling.type].toLowerCase()} at ${cancelling.building_name} disappears from the driver's list. A cancelled task cannot be opened again, and no next swap is planned from it.${cancelling.type === 'collection' ? '' : ' To visit this building again, make a swap with "New task".'}`}
+        {cancelling && `The ${TASK_TYPE[cancelling.type].toLowerCase()} at ${cancelling.building_name} disappears from the driver's list. A cancelled task cannot be opened again, and no next swap is planned from it.${cancelling.type === 'collection' ? '' : ' To visit this location again, make a swap with "New task".'}`}
       </ConfirmDialog>
 
       <Dialog open={proof !== null} onClose={() => setProof(null)} title="Proof of the stop" description={proof ? `${TASK_TYPE[proof.type]} at ${proof.building_name}, closed ${when(proof.completed_at)}.` : undefined} className="sm:max-w-2xl">

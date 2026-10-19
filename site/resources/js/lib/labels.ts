@@ -92,7 +92,16 @@ export function day(date: string | null | undefined): string {
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-/** Today in the Netherlands as YYYY-MM-DD, the form the API takes. */
+let businessDate: string | null = null
+
+/** Keep every office and handheld screen on the server's shared business date. */
+export function setBusinessDate(date: string): void {
+  if (businessDate === date) return
+  businessDate = date
+  window.dispatchEvent(new Event('proti:business-date'))
+}
+
+/** Business today as YYYY-MM-DD; the server supplies simulator dates. */
 export function today(): string {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Amsterdam' })
+  return businessDate ?? new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Amsterdam' })
 }

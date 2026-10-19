@@ -17,12 +17,13 @@ final class TaskController extends Controller
     private const SELECT = 'SELECT t.id, t.type, t.status, t.due_date, t.completed_at, t.contract_id, t.building_id, t.previous_task_id,
             t.assigned_to, u.name AS assigned_name, t.signed_name, t.issue_note, t.photo_path IS NOT NULL AS has_proof,
             b.name AS building_name, b.street, b.postcode, b.city, a.name AS area_name,
-            c.id AS customer_id, c.name AS customer_name, c.contact_name, c.contact_phone
+            c.id AS customer_id, c.name AS customer_name, c.contact_name, c.contact_phone,
+            o.id AS order_id, o.number AS order_number
         FROM tasks t
         JOIN buildings b ON b.id = t.building_id
-        JOIN areas a ON a.id = b.area_id
+        LEFT JOIN areas a ON a.id = b.area_id
         JOIN customers c ON c.id = b.customer_id
-        LEFT JOIN users u ON u.id = t.assigned_to';
+        LEFT JOIN users u ON u.id = t.assigned_to LEFT JOIN orders o ON o.task_id = t.id';
 
     /** One task. 404 when unknown. */
     private static function view(int $id): array
@@ -43,7 +44,7 @@ final class TaskController extends Controller
             FROM contract_lines l JOIN zones z ON z.id = l.zone_id JOIN item_types it ON it.id = l.item_type_id
             WHERE l.contract_id = ? AND z.building_id = ? ORDER BY z.name, it.name',
             [$task['contract_id'], $task['building_id']]);
-        $task['in_building'] = rows("SELECT i.id, i.sku, i.epc, i.zone_id, it.name AS type
+        $task['in_building'] = rows("SELECT i.id, i.sku, i.epc, i.zone_id, i.delivered_on, i.swap_due_date, it.name AS type
             FROM items i JOIN item_types it ON it.id = i.item_type_id JOIN zones z ON z.id = i.zone_id
             WHERE i.status = 'at_customer' AND z.building_id = ? ORDER BY i.sku", [$task['building_id']]);
         return $task;
@@ -60,6 +61,7 @@ final class TaskController extends Controller
             JOIN zones z ON z.id = l.zone_id AND z.building_id = t.building_id
             JOIN item_types it ON it.id = l.item_type_id
             WHERE t.status = 'open' AND t.type IN ('delivery', 'swap')
+              AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.task_id = t.id)
             GROUP BY t.assigned_to, u.name, l.item_type_id, it.name
             ORDER BY u.name, it.name");
 
@@ -92,7 +94,7 @@ final class TaskController extends Controller
             return ['drivers' => self::needs()];
         }
         if ($user->role === 'driver') {
-            $tasks = rows(self::SELECT . " WHERE t.assigned_to = ? AND t.status = 'open' ORDER BY t.due_date, t.id", [$user->id]);
+            $tasks = rows(self::SELECT . " WHERE t.assigned_to = ? AND t.status = 'open' AND o.id IS NULL ORDER BY t.due_date, t.id", [$user->id]);
             return ['tasks' => array_map(self::stopDetails(...), $tasks)];
         }
 
@@ -120,6 +122,12 @@ final class TaskController extends Controller
             . " ORDER BY t.status = 'open' DESC, t.due_date, t.id LIMIT 200", $params)];
     }
 
+    /** Office expansion uses the same stop contract as the driver; linked exact mats come from the order. */
+    public function show(int $id): array
+    {
+        return ['task' => self::stopDetails(self::view($id))];
+    }
+
     /**
      * The office creates a task by hand. A collection: pick-up only, when a contract ends.
      * A swap: for a building of a running contract that has no visit planned, because its swap was cancelled.
@@ -139,7 +147,7 @@ final class TaskController extends Controller
 
         return DB::transaction(function () use ($type, $contractId, $buildingId, $in): array {
             // The lock makes two clicks on "create" wait for each other, so a building gets one swap and not two.
-            $contract = row('SELECT status FROM contracts WHERE id = ? FOR UPDATE', [$contractId]);
+            $contract = row('SELECT status,building_id FROM contracts WHERE id = ? FOR UPDATE', [$contractId]);
             if ($contract === null) {
                 fail(404, 'not_found', 'No such contract.');
             }
@@ -151,7 +159,7 @@ final class TaskController extends Controller
             }
             $inContract = DB::scalar('SELECT 1 FROM contract_lines l JOIN zones z ON z.id = l.zone_id WHERE l.contract_id = ? AND z.building_id = ? LIMIT 1',
                 [$contractId, $buildingId]);
-            if ($inContract === null) {
+            if ($inContract === null || ($contract['building_id'] !== null && (int) $contract['building_id'] !== $buildingId)) {
                 fail(422, 'invalid_reference', 'This building is not part of that contract.');
             }
             $planned = $type !== 'swap' ? null : row("SELECT type, due_date FROM tasks
@@ -180,6 +188,9 @@ final class TaskController extends Controller
             $task = row('SELECT status FROM tasks WHERE id = ? FOR UPDATE', [$id]);
             if ($task === null) {
                 fail(404, 'not_found', 'No such task.');
+            }
+            if (DB::scalar('SELECT 1 FROM orders WHERE task_id = ?', [$id]) !== null) {
+                fail(409, 'order_managed', 'This task is managed by its office order.');
             }
             if ($task['status'] !== 'open') {
                 fail(409, 'not_open', "This task is already {$task['status']}.");
@@ -297,6 +308,9 @@ final class TaskController extends Controller
                 if ($task === null) {
                     fail(404, 'not_found', 'No such task.');
                 }
+                if (DB::scalar('SELECT 1 FROM orders WHERE task_id = ?', [$id]) !== null) {
+                    fail(409, 'order_managed', 'Complete this task through its office order.');
+                }
                 if ($task['assigned_to'] !== $user->id) {
                     fail(403, 'forbidden', 'This task is not assigned to you.');
                 }
@@ -311,6 +325,9 @@ final class TaskController extends Controller
                 foreach ($all as $epc) {
                     if (!isset($items[$epc])) {
                         fail(422, 'unknown_tag', "No mat has the tag $epc.");
+                    }
+                    if (Scan::reserved((int) $items[$epc]['id'])) {
+                        fail(409, 'reserved', 'This mat is reserved by an office order.');
                     }
                 }
                 $zoneIds = array_column(rows('SELECT id FROM zones WHERE building_id = ?', [$task['building_id']]), 'id');
@@ -371,9 +388,12 @@ final class TaskController extends Controller
                     // A drop is logged with the zone the mat went to, a pick-up with the zone it came from.
                     Scan::log($item, $user->id, $event, $to, $source, ['task_id' => $id, 'zone_id' => $zone ?? $item['zone_id']]);
                 };
+                $deliveryDate = today_nl();
                 foreach ($drops as $zoneId => $epcs) {
                     foreach ($epcs as $epc) {
                         $move($items[$epc], 'at_customer', null, $zoneId, 'deliver');
+                        DB::update('UPDATE items SET delivered_on = ?, swap_due_date = ?, delivered_contract_id = ? WHERE id = ?',
+                            [$deliveryDate, days_after($deliveryDate, (int) $task['swap_interval_days']), $task['contract_id'], $items[$epc]['id']]);
                     }
                 }
                 foreach ($refused as $epc) {
@@ -391,17 +411,7 @@ final class TaskController extends Controller
                     }
                     $saved[] = "proofs/$name";
                 }
-                DB::update("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP(), photo_path = ?, signature_path = ?,
-                        signed_name = ?, issue_note = ? WHERE id = ? AND status = 'open'",
-                    ["$stem.jpg", "$stem.png", $signedName, $note, $id]);
-
-                // Today is D. The next swap is due on D + n. The unique key on previous_task_id allows only one.
-                $nextId = null;
-                if ($task['type'] !== 'collection' && $task['contract_status'] === 'active') {
-                    DB::insert("INSERT INTO tasks (type, contract_id, building_id, previous_task_id, due_date) VALUES ('swap', ?, ?, ?, ?)",
-                        [$task['contract_id'], $task['building_id'], $id, days_after(today_nl(), $task['swap_interval_days'])]);
-                    $nextId = (int) DB::getPdo()->lastInsertId();
-                }
+                $nextId = self::finishVisit($task, "$stem.jpg", "$stem.png", $signedName, $note, $deliveryDate, $dropped !== []);
                 return ['task' => self::view($id), 'next_task_id' => $nextId];
             });
         } catch (\Throwable $e) {
@@ -409,6 +419,25 @@ final class TaskController extends Controller
             Storage::disk('local')->delete($saved);
             throw $e;
         }
+    }
+
+    /** Both legacy stops and exact-mat orders finish the locked visit through this single lifecycle. */
+    public static function finishVisit(array $task, string $photo, string $signature, string $signedName, ?string $note, string $visitDate, bool $hasDelivery): ?int
+    {
+        $changed = DB::update("UPDATE tasks SET status = 'done', completed_at = UTC_TIMESTAMP(), photo_path = ?, signature_path = ?,
+            signed_name = ?, issue_note = ? WHERE id = ? AND status = 'open'", [$photo, $signature, $signedName, $note, $task['id']]);
+        if ($changed !== 1) {
+            fail(409, 'not_open', 'This contract visit is no longer open.');
+        }
+        // Today is D. The next swap is due on D + n; previous_task_id allows exactly one successor.
+        if ($hasDelivery && $task['type'] !== 'collection' && $task['contract_status'] === 'active') {
+            DB::insert("INSERT INTO tasks (type, contract_id, building_id, previous_task_id, due_date) VALUES ('swap', ?, ?, ?, ?)",
+                [$task['contract_id'], $task['building_id'], $task['id'], days_after($visitDate, (int) $task['swap_interval_days'])]);
+
+            return (int) DB::getPdo()->lastInsertId();
+        }
+
+        return null;
     }
 
     public function photo(int $id): StreamedResponse

@@ -153,7 +153,7 @@ final class HandoverScanTest extends ApiTestCase
         $this->scanHandover('inventory', $handover, 1);
 
         $mat = $this->item(1);
-        $this->assertSame(['ready', null, 0, null], [$mat['status'], $mat['holder_user_id'], $mat['wash_count'], $mat['current_wash_date']]);
+        $this->assertSame(['registered', null, 0, null], [$mat['status'], $mat['holder_user_id'], $mat['wash_count'], $mat['current_wash_date']]);
     }
 
     public function test_a_rewash_goes_to_washing_and_is_counted_when_it_comes_back(): void

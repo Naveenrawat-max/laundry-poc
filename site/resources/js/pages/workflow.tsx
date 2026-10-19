@@ -8,31 +8,31 @@ import { Card, CardBody, CardTitle } from '@/components/ui/card'
 import { Chip } from '@/components/ui/chip'
 
 const STOPS = [
-  { icon: Warehouse, name: 'Inventory', text: 'Every mat gets two tags, is checked, and waits here until it is needed.', next: 'Handover A' },
+  { icon: Warehouse, name: 'Inventory', text: 'The office registers each mat and creates its delivery order. Inventory checks the ordered mats before dispatch.', next: 'Dispatch to driver' },
   { icon: Building2, name: 'At the customer', text: 'The driver lays the mats in the right spot and proves it with a photo and a signature.', next: 'Swap day' },
-  { icon: Truck, name: 'On the van', text: 'After the agreed number of days the driver brings clean mats and takes the used ones along.', next: 'Handover B' },
-  { icon: WashingMachine, name: 'Washing house', text: 'Used mats are washed here. Scanning them out counts one wash.', next: 'Handover C' },
+  { icon: Truck, name: 'On the van', text: 'The office selects delivered customer mats for pickup. Their return reason determines washing, clean inventory or inspection.', next: 'Recipient confirms receipt' },
+  { icon: WashingMachine, name: 'Washing house', text: 'Incoming orders identify the driver and exact mats. Receipt is confirmed before washing and return to inventory.', next: 'Back to inventory' },
 ]
 
 const STEPS: { who: string; title: string; text: string }[] = [
-  { who: 'Office', title: 'Set up the customer', text: 'Add the customer, the building and the spots where mats lie. The contract says which mats, how many, and after how many days they are swapped.' },
-  { who: 'Inventory', title: 'Get the mats ready', text: 'Tag each new mat, mark it ready to use, and check its quality. Only a mat that passes may go out.' },
-  { who: 'Inventory and driver', title: 'Handover A: load the van', text: 'Inventory scans the mats out. The driver scans the same mats in. Now they are on his van.' },
-  { who: 'Driver', title: 'Deliver', text: 'At the customer the driver scans each mat where he lays it, takes a photo and gets a signature. That day starts the count.' },
-  { who: 'Driver', title: 'Swap', text: 'When the days are up, a swap task appears. The driver lays clean mats and picks up the used ones, again with a scan, a photo and a signature.' },
-  { who: 'Driver and washing', title: 'Handover B: bring them to washing', text: 'The driver scans the used mats out. The washing house scans them in.' },
-  { who: 'Washing', title: 'Handover C: wash and send back', text: 'After washing, the washing house scans the clean mats out. That one scan counts the wash and makes the mat ready again in inventory.' },
+  { who: 'Office', title: 'Set up the customer', text: 'Add customer details and one or more service locations. Each location starts with a Main area. Create and start its own contract with a service start date, mat quantities and D+n days between actual deliveries or swaps.' },
+  { who: 'Office', title: 'Register and create a delivery order', text: 'Create a category and subcategory, then a SKU with size, colour and untagged quantity. Select that SKU before scanning both demo tags. Inspect the captured EPCs and TIDs, then press Map. One mat becomes ready immediately; its SKU stays selected for the next mat. Choose customer and location to load its active service schedule, then select exact mats and a driver.' },
+  { who: 'Inventory', title: 'Quality check and dispatch', text: 'Scan each mat in the order and record its quality. Replace failed mats and check their replacements. Scan the complete passed order to dispatch it to the assigned driver.' },
+  { who: 'Driver', title: 'Scan, prove and deliver', text: 'My tasks shows the order number and exact products. One batch scan checks every matching mat in the pile and reports unrelated tags. Photo, signature and customer acceptance or refusal appear after all ordered mats are scanned.' },
+  { who: 'Office', title: 'Create a pickup order', text: 'Choose the customer and location to see mats already delivered there. Select exact mats, driver and return reason. Used mats go to washing; unused clean mats become ready when inventory receives them; damaged mats require inspection and repair.' },
+  { who: 'Driver and recipient', title: 'Pick up and confirm receipt', text: 'The driver scans every ordered customer mat and records proof. Washing receives an incoming notification by driver; washing or inventory scans and confirms the mats it receives.' },
+  { who: 'Washing', title: 'Wash and send back', text: 'After confirming receipt and washing the mats, scan the clean order to confirm the wash and return it to inventory. Each mat gets exactly one wash added.' },
 ]
 
 const RULES = [
-  { icon: ScanLine, title: 'Both sides scan', text: 'A mat only changes hands when the giver and the receiver have both scanned it.' },
-  { icon: Flag, title: 'A lone scan is flagged', text: 'A mat scanned by one side stays where it was, and the office sees it in the list of handover issues.' },
+  { icon: ScanLine, title: 'Exact mats, exact scans', text: 'An order reserves individual mats. A different mat cannot complete an ordered product’s checklist.' },
+  { icon: Flag, title: 'Quality before dispatch', text: 'Every ordered delivery mat must pass QC. Failed mats are replaced and checked before the driver can deliver.' },
   { icon: Repeat, title: 'Scan twice, count once', text: 'Scanning the same mat again changes nothing. A wash can never be counted twice.' },
 ]
 
 const PEOPLE = [
-  { name: 'Office', tool: 'Web console', text: 'Customers, contracts, tasks, the mat list and handover issues.' },
-  { name: 'Inventory manager', tool: 'Handheld', text: 'Registers and checks mats, and hands them to the driver.' },
+  { name: 'Office', tool: 'Web console', text: 'Categories, product SKUs and stock, individual mat registration, delivery and pickup orders, customers and contracts.' },
+  { name: 'Inventory manager', tool: 'Handheld', text: 'Checks order quality, replaces failed mats, dispatches passed orders and receives returns.' },
   { name: 'Delivery driver', tool: 'Handheld', text: 'Loads, delivers, swaps and collects, and brings used mats to washing.' },
   { name: 'Washing house manager', tool: 'Handheld', text: 'Receives used mats and sends washed ones back.' },
   { name: 'Outbound', tool: 'Handheld, optional', text: 'Only scans mats out to the driver, when that is a separate person.' },
@@ -81,7 +81,7 @@ export function WorkflowPage() {
                   <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-400">{stop.text}</p>
                   <p className="mt-auto flex items-center gap-1.5 pt-3 text-xs text-muted-foreground">
                     <ArrowRight className="size-3.5" aria-hidden="true" />
-                    {i === 3 ? 'Handover C, back to inventory' : stop.next}
+                    {stop.next}
                   </p>
                 </CardBody>
               </Card>

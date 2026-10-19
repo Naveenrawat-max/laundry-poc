@@ -81,6 +81,7 @@ export function FormDialog({
   title,
   description,
   submitLabel = 'Save',
+  nextLabel,
   busy,
   error,
   onSubmit,
@@ -92,9 +93,11 @@ export function FormDialog({
   title: string
   description?: ReactNode
   submitLabel?: string
+  /** A second submit. Present only while creating, so the user can continue to the next record. */
+  nextLabel?: string
   busy: boolean
   error: string | null
-  onSubmit: () => void
+  onSubmit: (proceed?: boolean) => void
   onClose: () => void
   children: ReactNode
   className?: string
@@ -105,7 +108,8 @@ export function FormDialog({
         className="mt-5 space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
-          onSubmit()
+          const submitter = (e.nativeEvent as SubmitEvent).submitter
+          onSubmit(submitter instanceof HTMLButtonElement && submitter.value === 'next')
         }}
       >
         {children}
@@ -114,9 +118,14 @@ export function FormDialog({
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" disabled={busy}>
+          <Button type="submit" value="save" disabled={busy}>
             {busy ? 'Saving' : submitLabel}
           </Button>
+          {nextLabel && (
+            <Button type="submit" value="next" variant="outline" disabled={busy} iconRight={null}>
+              {busy ? 'Saving' : nextLabel}
+            </Button>
+          )}
         </DialogActions>
       </form>
     </Dialog>

@@ -2,7 +2,7 @@
 
 Version: 0.3.0
 
-This document has two parts. The first says how the web app is used: every page of the office, every screen of each handheld, and the way back of a mat from the customer on day D + n. The second is the end-to-end test that was run on 13 October 2026 with 240 mats and 13 sites, written down so that anyone can run it again and compare.
+New to the app? Start with [onboarding.md](onboarding.md). That guide is the first day for every role. This document has two parts. The first says how the web app is used: every page of the office, every screen of each handheld, and the way back of a mat from the customer on day D + n. The second is the end-to-end test that was run on 13 October 2026 with 240 mats and 13 sites, written down so that anyone can run it again and compare.
 
 The rules behind every step are in [ARCHITECTURE.md](../ARCHITECTURE.md). The loop itself is drawn in [FLOW.md](../FLOW.md).
 
@@ -62,10 +62,10 @@ Other words:
 | Word | Meaning |
 |---|---|
 | Customer | The company that rents the mats |
-| Building | One address of a customer. One building is one stop for the driver. |
-| Zone | The spot in a building where a mat lies, for example "Main entrance" |
-| Contract | Which mat types lie in which zones, how many, and after how many days they are swapped |
-| n, "Days between swaps" | The number of days a mat lies at the customer before it is swapped. Set per contract, 1 to 365. |
+| Location | One address of a customer. The office calls it a location. One location is one stop for the driver. It is not a company-wide delivery area. |
+| Zone | The spot at a location where a mat lies, for example "Main area" |
+| Contract | One location: which products lie in which zones, how many, the start date, and D+n. Orders show that schedule, not a contract number. |
+| D+n | The number of days after a delivery or swap before the next swap. Set on that location's contract, 1 to 365. |
 | D | The day a driver closes a stop |
 | Task | One visit to one building: a delivery, a swap or a collection |
 | Stop | The same visit, as the driver sees it |
@@ -129,54 +129,46 @@ The first page to open every morning. It refreshes by itself every 30 seconds.
 
 A task in "Needs attention" carries a red label "Late" when its due date has passed, and a label "No driver" when nobody is assigned. When nothing is late, every task has a driver and every handover added up, the block says "All clear".
 
-#### Setup, Mat types and areas
+#### Setup, Categories and SKUs
 
-Two short lists that the other pages pick from.
-
-| Do | How |
-|---|---|
-| Add a mat type | "Add mat type", type the name, save. For example "Mat 85x150 grey". |
-| Rename a mat type or switch it off | "Edit" in its row. A type that is switched off can no longer be picked for new mats and contracts. |
-| Add a delivery area | "Add area", type the name, save. Every building belongs to one area. |
-| Rename an area | "Edit" in its row. An area cannot be switched off. |
-
-Nothing here is ever deleted.
+Create a category, then a subcategory, then a product SKU with size, colour and untagged stock. This page has no delivery-area list.
 
 #### Setup, Customers
 
-The left side lists the customers. Click one to see it on the right, with its buildings and zones.
+The left side lists the customers. Click one to see it on the right, with its locations and zones.
 
 | Do | How |
 |---|---|
-| Add a customer | "Add customer". Name is needed; contact person, phone and email are optional. |
-| Change a customer or switch it off | "Edit customer" |
-| Add a building | "Add building": name, street and number, postcode, city and delivery area. There must be at least one area first. |
-| Change a building or switch it off | "Edit" on the building |
-| Add a zone | "Add zone" on the building, then a name such as "Front door" |
+| Add a customer | "Add customer". Name is needed; contact person, phone and email are optional. Add at least one location in the same form. More locations can be added now or later. |
+| Change a customer or switch it off | "Edit customer". Locations stay as they are. |
+| Add a location | "Add location": name, street and number, postcode and city. A Main area is created with it. |
+| Change a location or switch it off | "Edit" on the location |
+| Add a zone | "Add zone" on the location, then a name such as "Front door" |
 | Rename a zone or switch it off | Click the zone's name. A zone that is switched off is shown struck through. |
 
 The contact person of the customer is what the driver sees at the stop, and is filled in as the name of the person who signs.
 
 #### Setup, Contracts
 
-A contract says which mats lie where and how often they are swapped. Each contract is a card: the customer, "Swap every n days", the start date, the lines, and a label Draft, Active or Ended.
+A contract belongs to one customer location. Each card shows the customer, the location, the start date, D+n, the lines, and a label Draft, Active or Ended. It does not show a contract number.
 
 **Make a contract**
 
 1. "New contract".
 2. Pick the customer.
-3. Fill in "Days between swaps". This is n. It may be 1 to 365. It starts at 14.
-4. Fill in the start date. The first delivery is due on this day.
-5. Under "Mats per zone" add one line per zone and mat type: the zone, the mat type and how many. "Add a line" gives another line. Only zones of this customer can be picked.
-6. Save. The contract is a draft. A draft can be changed as often as needed.
+3. Pick the location. The location is added under Customers, and it can be changed later or joined by more locations.
+4. Fill in "D+n". This is the number of days after a delivery or swap. It may be 1 to 365. It starts at 14.
+5. Fill in the start date. The first delivery is due on this day. From this date the mats will be swapped.
+6. Under "Mats per zone" add one line per zone and product: the zone, the product and how many. "Add a line" gives another line. Only zones of this location can be picked.
+7. Save. The contract is a draft. A draft can be changed as often as needed.
 
 **Start a contract**
 
 1. "Start contract" on the card.
 2. A dialog says how many tasks are made and what can no longer be changed.
-3. Confirm. The contract becomes Active. One delivery task is created for each building that has a line, due on the start date. The message says how many tasks now wait for a driver.
+3. Confirm. The contract becomes Active. One delivery task is created for that location, due on the start date. The message says that the task now waits for a driver.
 
-After the start, the mats per zone and the start date are fixed. Only "Days between swaps" can still change. When it changes, every open swap task of this contract moves by the difference: from 14 to 7 days, every open swap comes 7 days earlier.
+After the start, the location, the mats per zone and the start date are fixed. Only D+n can still change. When it changes, every open swap task of this contract moves by the difference: from 14 to 7 days, every open swap comes 7 days earlier.
 
 A contract without a line cannot be started.
 
@@ -280,7 +272,7 @@ This chapter follows one mat back from the customer: how the office gets to know
 
 #### The rule
 
-- n is "Days between swaps" on the contract.
+- n is D+n on the location's contract.
 - D is the day the driver closes a stop at a building.
 - At that moment the server makes one new task: a **swap** for the same building, due on **D + n**, without a driver.
 
@@ -407,7 +399,7 @@ The mat is back on the shelf. Before it goes out again it passes the quality che
 | The driver closes the stop a day late | D is the day the stop is really closed, not the due date. The next swap is n days after that day. |
 | The driver closes the stop before its due date | Allowed. The next swap is n days after the day of closing. |
 | The office moves the due date of a swap | Only that task moves. The swap after it is still counted from the day the stop is closed. |
-| The office changes "Days between swaps" on an active contract | Every open swap of that contract moves by the difference |
+| The office changes D+n on an active contract | Every open swap of that contract moves by the difference |
 | The office cancels a swap | No next swap is planned from it. The repeat for that building stops and the mats stay at the customer, until the office plans a swap by hand with "New task". |
 | The office ends the contract | Its open swaps are cancelled. The mats stay at the customer until a collection task brings them back. |
 | A collection is closed | The driver only picks up. No next swap is planned. The handheld says "Nothing further is planned for this building." |

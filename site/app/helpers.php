@@ -32,7 +32,7 @@ function marks(array $xs): string
 /** Today as a calendar day in the Netherlands. DATE columns hold these, DATETIME columns hold UTC. */
 function today_nl(): string
 {
-    return (new DateTimeImmutable('now', new DateTimeZone('Europe/Amsterdam')))->format('Y-m-d');
+    return \App\Support\BusinessClock::today();
 }
 
 function days_after(string $date, int $days): string

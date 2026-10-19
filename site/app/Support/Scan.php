@@ -63,7 +63,7 @@ final class Scan
         if ($epcs === []) {
             return [];
         }
-        $sql = self::ITEM_SELECT . ' WHERE i.epc IN (' . marks($epcs) . ')' . ($lock ? ' FOR UPDATE' : '');
+        $sql = self::ITEM_SELECT . ' WHERE i.epc IN (' . marks($epcs) . ') ORDER BY i.id' . ($lock ? ' FOR UPDATE' : '');
         return array_column(rows($sql, $epcs), null, 'epc');
     }
 
@@ -74,6 +74,12 @@ final class Scan
             fail(404, 'not_found', 'No such mat.');
         }
         return $item;
+    }
+
+    /** Call after locking the item: legacy moves cannot steal an order's exact mat. */
+    public static function reserved(int $id): bool
+    {
+        return DB::scalar('SELECT 1 FROM order_items WHERE reserved_item_id = ? LIMIT 1 FOR UPDATE', [$id]) !== null;
     }
 
     /** A mat as every scanning role may see it. It never says at which customer the mat lies. */

@@ -1,4 +1,7 @@
-/** Calls the API under /api/v1. One client per login: the office uses the session cookie, a handheld its own token. */
+/** Calls the API under /api/v1, inside the directory prefix when there is one. One client per login: the office uses the session cookie, a handheld its own token. */
+
+import { appBase } from '@/lib/base'
+import { setBusinessDate } from '@/lib/labels'
 
 export class ApiError extends Error {
   constructor(
@@ -14,6 +17,7 @@ export type Api = {
   get<T>(path: string): Promise<T>
   post<T>(path: string, body?: unknown): Promise<T>
   patch<T>(path: string, body: unknown): Promise<T>
+  del<T>(path: string): Promise<T>
   /** A form with files: the JSON goes in the field "payload", as closing a stop needs it. */
   form<T>(path: string, payload: unknown, files: Record<string, Blob>): Promise<T>
   /** The address of a file behind the API, for an <img>. Cookie logins only. */
@@ -31,10 +35,15 @@ type Auth = {
   onLoggedOut?: () => void
 }
 
-const BASE = '/api/v1'
+const BASE = `${appBase()}/api/v1`
+let clockEpoch = 0
+let requestSequence = 0
+let clockSequence = 0
 
 export function createApi(auth: Auth = {}): Api {
   async function call<T>(method: string, path: string, body?: BodyInit, json = false): Promise<T> {
+    const epoch = clockEpoch
+    const sequence = ++requestSequence
     const token = auth.token?.() ?? null
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (json) headers['Content-Type'] = 'application/json'
@@ -43,7 +52,7 @@ export function createApi(auth: Auth = {}): Api {
 
     let response: Response
     try {
-      response = await fetch(BASE + path, { method, headers, body, credentials: auth.cookies === false ? 'omit' : 'same-origin' })
+      response = await fetch(BASE + path, { method, headers, body, cache: 'no-store', credentials: auth.cookies === false ? 'omit' : 'same-origin' })
     } catch {
       throw new ApiError(0, 'offline', 'The server could not be reached.')
     }
@@ -52,6 +61,14 @@ export function createApi(auth: Auth = {}): Api {
       if (response.status === 401) auth.onLoggedOut?.()
       throw new ApiError(response.status, data?.error?.code ?? 'http_error', data?.error?.message ?? `The server answered ${response.status}.`)
     }
+    const changesClock = path === '/simulation-clock/skip' || (path === '/simulation-clock' && method === 'DELETE')
+    const businessDate = response.headers.get('X-Business-Date')
+    // A clock mutation invalidates dates returned by requests already in flight.
+    if (changesClock) clockEpoch += 1
+    if (businessDate && (changesClock || (epoch === clockEpoch && sequence > clockSequence))) {
+      clockSequence = sequence
+      setBusinessDate(businessDate)
+    }
     return data as T
   }
 
@@ -59,6 +76,7 @@ export function createApi(auth: Auth = {}): Api {
     get: (path) => call('GET', path),
     post: (path, body) => call('POST', path, JSON.stringify(body ?? {}), true),
     patch: (path, body) => call('PATCH', path, JSON.stringify(body), true),
+    del: (path) => call('DELETE', path),
     form: (path, payload, files) => {
       const form = new FormData()
       form.set('payload', JSON.stringify(payload))

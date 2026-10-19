@@ -10,38 +10,62 @@ use Illuminate\Support\Facades\DB;
 
 final class ItemController extends Controller
 {
-    /** Registers a new mat with its EPC and its two tags. */
+    /** Maps one stocked SKU mat to its two tags, using the first tag's common EPC. */
     public function store(Request $request): array
     {
+        $in = $request->validate(['catalog_sku_id' => 'required|integer|min:1', 'item_type_id' => 'sometimes|integer|min:1']);
+        $catalogId = (int) $in['catalog_sku_id'];
+        $catalog = row('SELECT s.*, t.category_id FROM sku_catalog s JOIN item_types t ON t.id = s.item_type_id
+            JOIN categories c ON c.id = t.category_id WHERE s.id = ? AND s.is_active = 1 AND t.is_active = 1 AND c.is_active = 1', [$catalogId]);
+        if ($catalog === null || $catalog['width_cm'] === null || $catalog['height_cm'] === null || trim((string) $catalog['color']) === ''
+            || (isset($in['item_type_id']) && (int) $in['item_type_id'] !== (int) $catalog['item_type_id'])) {
+            fail(422, 'invalid_reference', 'Select an active, complete SKU before mapping tags.');
+        }
         $source = Scan::source($request->all());
-        $epc = Scan::hex($request->input('epc'), 'epc');
+        $epcPrimary = Scan::hex($request->input('epc_primary'), 'epc_primary');
+        $epcSecondary = Scan::hex($request->input('epc_secondary'), 'epc_secondary');
         $tidPrimary = Scan::hex($request->input('tid_primary'), 'tid_primary');
         $tidSecondary = Scan::hex($request->input('tid_secondary'), 'tid_secondary');
-        $in = $request->validate(['sku' => 'required|string|max:64', 'item_type_id' => 'required|integer|min:0']);
-        $sku = $in['sku'];
-        $typeId = (int) $in['item_type_id'];
+        $epc = $epcPrimary;
+        $sku = 'MAT-' . strtoupper(bin2hex(random_bytes(8)));
+        $typeId = (int) $catalog['item_type_id'];
         $userId = $request->user()->id;
 
         if ($tidPrimary === $tidSecondary) {
             fail(422, 'same_tid', 'The two tags of a mat must have different TIDs.');
         }
-        if (DB::scalar('SELECT 1 FROM item_types WHERE id = ? AND is_active = 1', [$typeId]) === null) {
-            fail(422, 'invalid_reference', 'Unknown mat type.');
+        // Cross-column TID uniqueness needs one lock across all SKUs, not just each SKU's stock lock.
+        $lock = 'laundry:registration:'.substr(hash('sha256', DB::connection()->getDatabaseName()), 0, 32);
+        if ((int) DB::scalar('SELECT GET_LOCK(?, 5)', [$lock]) !== 1) {
+            fail(409, 'registration_busy', 'Another mat is being mapped. Try again.');
         }
-
-        return DB::transaction(function () use ($source, $epc, $tidPrimary, $tidSecondary, $sku, $typeId, $userId): array {
-            // Also catches a TID that is primary on one mat and secondary on another, which the unique keys cannot.
-            $clash = row('SELECT sku FROM items WHERE epc = ? OR sku = ? OR tid_primary IN (?, ?) OR tid_secondary IN (?, ?) LIMIT 1',
-                [$epc, $sku, $tidPrimary, $tidSecondary, $tidPrimary, $tidSecondary]);
-            if ($clash !== null) {
-                fail(409, 'duplicate', "The EPC, the SKU or a TID is already in use on {$clash['sku']}.");
-            }
-            DB::insert('INSERT INTO items (item_type_id, sku, epc, tid_primary, tid_secondary) VALUES (?, ?, ?, ?, ?)',
-                [$typeId, $sku, $epc, $tidPrimary, $tidSecondary]);
-            $item = Scan::itemById((int) DB::getPdo()->lastInsertId());
-            Scan::log(['status' => null] + $item, $userId, 'register', 'registered', $source);
-            return ['item' => Scan::view($item)];
-        });
+        try {
+            return DB::transaction(function () use ($source, $epc, $epcSecondary, $tidPrimary, $tidSecondary, $sku, $typeId, $userId, $catalogId): array {
+                $catalog = row('SELECT s.* FROM sku_catalog s JOIN item_types t ON t.id = s.item_type_id
+                    JOIN categories c ON c.id = t.category_id WHERE s.id = ? AND s.item_type_id = ?
+                    AND s.is_active = 1 AND t.is_active = 1 AND c.is_active = 1 FOR UPDATE', [$catalogId, $typeId]);
+                if ($catalog === null) {
+                    fail(422, 'invalid_reference', 'Choose an active SKU in an active category.');
+                }
+                if ((int) $catalog['untagged_quantity'] < 1) {
+                    fail(409, 'out_of_stock', 'This SKU has no untagged mats left. Add stock before mapping another mat.');
+                }
+                // Also catches a TID that is primary on one mat and secondary on another, which the unique keys cannot.
+                $clash = row('SELECT sku FROM items WHERE epc IN (?, ?) OR sku = ? OR tid_primary IN (?, ?) OR tid_secondary IN (?, ?) LIMIT 1',
+                    [$epc, $epcSecondary, $sku, $tidPrimary, $tidSecondary, $tidPrimary, $tidSecondary]);
+                if ($clash !== null) {
+                    fail(409, 'duplicate', "The EPC, the SKU or a TID is already in use on {$clash['sku']}.");
+                }
+                DB::insert("INSERT INTO items (item_type_id, catalog_sku_id, sku, epc, tid_primary, tid_secondary, status) VALUES (?, ?, ?, ?, ?, ?, 'ready')",
+                    [$typeId, $catalogId, $sku, $epc, $tidPrimary, $tidSecondary]);
+                $item = Scan::itemById((int) DB::getPdo()->lastInsertId());
+                DB::table('sku_catalog')->where('id', $catalogId)->decrement('untagged_quantity');
+                Scan::log(['status' => null] + $item, $userId, 'register', 'ready', $source);
+                return ['item' => Scan::view($item) + ['epc' => $epc, 'catalog_sku_id' => $catalogId, 'catalog_sku_code' => $catalog['code']]];
+            });
+        } finally {
+            DB::scalar('SELECT RELEASE_LOCK(?)', [$lock]);
+        }
     }
 
     private const QC_RESULTS = ['pass' => 'qc_passed', 'rewash' => 'rewash', 'repair' => 'repair', 'scrap' => 'scrapped'];
@@ -49,9 +73,11 @@ final class ItemController extends Controller
     private const PER_PAGE = 50;
 
     private const OFFICE_SELECT = 'SELECT i.*, t.name AS type_name, u.name AS holder_name, z.name AS zone_name,
-            b.name AS building_name, c.name AS customer_name
+            b.name AS building_name, c.name AS customer_name, s.code AS catalog_sku_code, s.label AS catalog_sku_label,
+            s.width_cm, s.height_cm, s.color
         FROM items i
         JOIN item_types t ON t.id = i.item_type_id
+        LEFT JOIN sku_catalog s ON s.id = i.catalog_sku_id
         LEFT JOIN users u ON u.id = i.holder_user_id
         LEFT JOIN zones z ON z.id = i.zone_id
         LEFT JOIN buildings b ON b.id = z.building_id
@@ -65,6 +91,14 @@ final class ItemController extends Controller
             'tid_primary' => $item['tid_primary'],
             'tid_secondary' => $item['tid_secondary'],
             'item_type_id' => $item['item_type_id'],
+            'catalog_sku_id' => $item['catalog_sku_id'] === null ? null : (int) $item['catalog_sku_id'],
+            'catalog_sku_code' => $item['catalog_sku_code'],
+            'catalog_sku_label' => $item['catalog_sku_label'],
+            'width_cm' => $item['width_cm'] === null ? null : (float) $item['width_cm'],
+            'height_cm' => $item['height_cm'] === null ? null : (float) $item['height_cm'],
+            'color' => $item['color'],
+            'delivered_on' => $item['delivered_on'],
+            'swap_due_date' => $item['swap_due_date'],
             'holder' => $item['holder_user_id'] === null ? null
                 : ['id' => $item['holder_user_id'], 'name' => $item['holder_name']],
             'location' => $item['zone_id'] === null ? null
@@ -86,6 +120,8 @@ final class ItemController extends Controller
                 $item = $items[$epc] ?? null;
                 if ($item === null) {
                     $results[] = Scan::result($epc, 'unknown', null);
+                } elseif (Scan::reserved((int) $item['id'])) {
+                    $results[] = Scan::result($epc, 'rejected', $item, 'Use the reserved order workflow for this mat.');
                 } elseif ($item['status'] === 'ready') {
                     $results[] = Scan::result($epc, 'found', $item);   // a second scan: nothing to change
                 } elseif (!in_array($item['status'], ['registered', 'repair'], true)) {
@@ -116,12 +152,15 @@ final class ItemController extends Controller
             $item = Scan::itemsByEpc([$epc], true)[$epc] ?? null;
             if ($item === null) {
                 $result = Scan::result($epc, 'unknown', null);
+            } elseif (Scan::reserved((int) $item['id'])) {
+                $result = Scan::result($epc, 'rejected', $item, 'Use the reserved order quality check for this mat.');
             } elseif ($item['status'] === $to) {
                 $result = Scan::result($epc, 'found', $item);   // a second scan: nothing to change
-            } elseif ($item['status'] !== 'ready') {
+            } elseif (!in_array($item['status'], ['ready', 'registered'], true)) {
                 $result = Scan::result($epc, 'rejected', $item, "{$item['sku']} is {$item['status']}, not ready.");
             } else {
-                DB::update("UPDATE items SET status = ? WHERE id = ? AND status = 'ready'", [$to, $item['id']]);
+                // registered: a return just received. ready: a mat already on the shelf.
+                DB::update('UPDATE items SET status = ? WHERE id = ? AND status = ?', [$to, $item['id'], $item['status']]);
                 Scan::log($item, $userId, 'qc', $to, $source, ['note' => $note]);
                 $result = Scan::result($epc, 'found', ['status' => $to] + $item);
             }
@@ -156,7 +195,13 @@ final class ItemController extends Controller
 
         return DB::transaction(function () use ($id, $status, $holder, $zone, $note, $userId): array {
             $item = Scan::itemById($id, true);
+            if (Scan::reserved($id)) {
+                fail(409, 'reserved', 'This mat is reserved by an order.');
+            }
             DB::update('UPDATE items SET status = ?, holder_user_id = ?, zone_id = ? WHERE id = ?', [$status, $holder, $zone, $id]);
+            if ($status === 'at_customer' && ($item['status'] !== 'at_customer' || (int) $item['zone_id'] !== $zone)) {
+                DB::update('UPDATE items SET delivered_on = NULL, swap_due_date = NULL, delivered_contract_id = NULL WHERE id = ?', [$id]);
+            }
             Scan::log($item, $userId, 'correction', $status, 'web', ['note' => $note, 'zone_id' => $zone]);
             return ['item' => Scan::view(['status' => $status] + $item)];
         });
@@ -198,17 +243,21 @@ final class ItemController extends Controller
         if (isset($filter['q'])) {
             // Escape the LIKE wildcards, so a search for "%" finds a literal "%" and not every mat.
             $like = '%' . addcslashes($filter['q'], '%_\\') . '%';
-            $where[] = '(i.sku LIKE ? OR i.epc LIKE ?)';
-            array_push($params, $like, $like);
+            $where[] = '(i.sku LIKE ? OR i.epc LIKE ? OR s.code LIKE ? OR s.label LIKE ?)';
+            array_push($params, $like, $like, $like, $like);
         }
         $page = max(1, (int) ($filter['page'] ?? 1));
 
         $sqlWhere = ' WHERE ' . implode(' AND ', $where);
-        $total = (int) DB::scalar('SELECT COUNT(*) FROM items i' . $sqlWhere, $params);
+        $total = (int) DB::scalar('SELECT COUNT(*) FROM items i LEFT JOIN sku_catalog s ON s.id = i.catalog_sku_id' . $sqlWhere, $params);
         $items = rows(self::OFFICE_SELECT . $sqlWhere . ' ORDER BY i.sku LIMIT ? OFFSET ?',
             [...$params, self::PER_PAGE, ($page - 1) * self::PER_PAGE]);
 
-        $view = $user->role === 'office' ? self::officeView(...) : Scan::view(...);
+        $view = match ($user->role) {
+            'office' => self::officeView(...),
+            'inventory' => static fn (array $item): array => Scan::view($item) + ['epc' => $item['epc']],
+            default => Scan::view(...),
+        };
         return ['items' => array_map($view, $items), 'page' => $page, 'per_page' => self::PER_PAGE, 'total' => $total];
     }
 

@@ -13,7 +13,7 @@
 
 RFID mat tracking for Proti, a company that rents, delivers, collects and washes door mats.
 
-![Version](https://img.shields.io/badge/version-0.5.8-2563eb?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.5.14-2563eb?style=flat-square)
 ![Stage](https://img.shields.io/badge/stage-design-f59e0b?style=flat-square)
 ![Handheld](https://img.shields.io/badge/handheld-simulated-8b5cf6?style=flat-square)
 ![Data](https://img.shields.io/badge/data-mock%20mats-64748b?style=flat-square)
@@ -50,7 +50,7 @@ RFID mat tracking for Proti, a company that rents, delivers, collects and washes
 Proti rents door mats to its customers, delivers and collects them with its own drivers, and washes them in its own washing house. Every mat carries two RFID tags. This system follows each mat through inventory, delivery, the customer, collection and washing.
 
 > [!NOTE]
-> **Backend built, screens not yet.** The Laravel API under `/api/v1` is built and tested. The web app (office console and scanner simulator) is the next step. The Chainway C72 handheld is simulated, and all mats are mock mats.
+> **Web app in the browser, scanner still simulated.** The Laravel API under `/api/v1` and the web app (office console and scanner simulator) are in this repo. The Chainway C72 handheld is simulated, and all mats are mock mats. New users start with [docs/onboarding.md](docs/onboarding.md).
 
 ## How it helps a laundry
 
@@ -245,10 +245,11 @@ The full table of who sees what is in [ARCHITECTURE.md](ARCHITECTURE.md#users-an
 | [db/seed.sql](db/seed.sql) | Mock data: 40 mats, 2 customers, 2 draft contracts |
 | [db/demo.sql](db/demo.sql) | More mock data on top of the seed, for a demo: 200 more mats, 10 more buildings |
 | [docs/deploy.md](docs/deploy.md) | Putting it on TransIP step by step: decisions, checks, the install, a test after go-live, updates and rollback |
+| [docs/onboarding.md](docs/onboarding.md) | First-day guide for every role: how to sign in, what each person does in the web app, and one day when the whole laundry works together |
 | [docs/walkthrough.md](docs/walkthrough.md) | How the office, the inventory manager, the driver and the washing house use every screen, how a swap comes due on day D + n, and the end-to-end test with 240 mats, step by step |
 | [docs/superpowers/plans/2026-10-12-backend-api.md](docs/superpowers/plans/2026-10-12-backend-api.md) | Implementation plan for the backend API, plan 1 of 3 |
 
-Start with POC.md, then ARCHITECTURE.md.
+Start with POC.md, then ARCHITECTURE.md. To learn the web app, start with [docs/onboarding.md](docs/onboarding.md).
 
 ## Load the database
 
@@ -300,24 +301,27 @@ While working on the screens, `npm run dev` next to the PHP server reloads the p
 
 ## Put it on TransIP
 
-Needs a web hosting package with SSH, PHP 8.3+ and a web root that can be pointed at a subfolder. Every setting lives in `site/.env` on the server; nothing is hardcoded. The full plan, with the checks before and after, an update and a rollback, is in [docs/deploy.md](docs/deploy.md).
+Needs a web hosting package with SSH, PHP 8.3+ and HTTPS on `app.abiot.re`. The app is served at `https://app.abiot.re/proti`. The whole repository goes in a folder that is not the web root. Only `site/public` is exposed, by a symlink named `proti` inside the document root of `app.abiot.re`. The database is the existing TransIP database. Do not add another one. Every setting lives in `site/.env` on the server. The file to upload as that `.env` is `site/.env.production` in this repo's working copy. It is not in git.
 
 ```bash
-# over SSH, in a folder that is not reachable from the web
+# over SSH, outside the web root
 git clone <this repository> laundry
 cd laundry/site
 composer install --no-dev --optimize-autoloader
-cp .env.example .env                 # then fill in APP_URL and the real database
+# upload site/.env.production from your machine as site/.env, then:
 php artisan key:generate
-php artisan migrate --force          # builds the tables from db/schema.sql
-php artisan db:seed --force          # the mock data of db/seed.sql, for the demo only
+php artisan migrate --force          # only when the tables are missing
 php artisan laundry:office-user      # the first office user
 php artisan config:cache             # again after every change to .env
 ```
 
-The web app is built on your own machine, because the hosting has no Node. Run `npm ci` and `npm run build` in `site`, then upload the folder `site/public/build` to the same place on the server. It is not in git. Do this again after every change to the screens.
+Skip `db:seed` unless this first load should still be the mock mats. The web app is built on your own machine, because the hosting has no Node. Run `npm ci` and `npm run build` in `site`, then upload the folder `site/public/build` to the same place on the server. It is not in git. Do this again after every change to the screens. In the document root of `app.abiot.re`:
 
-Then, in the TransIP control panel, point the site's web root (DocumentRoot) at `laundry/site/public` and switch HTTPS on. The folders `site/storage` and `site/bootstrap/cache` must be writable by PHP.
+```bash
+ln -s ~/laundry/site/public proti
+```
+
+Leave the document root of `app.abiot.re` where it is. The folders `site/storage` and `site/bootstrap/cache` must be writable by PHP.
 
 Never run `php artisan migrate:fresh` or `php artisan test` on the server: both empty the database they are pointed at.
 

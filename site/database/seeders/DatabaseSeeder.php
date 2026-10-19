@@ -11,5 +11,6 @@ final class DatabaseSeeder extends Seeder
     public function run(): void
     {
         run_sql_file(base_path('../db/seed.sql'));
+        $this->call(SkuCatalogSeeder::class);
     }
 }

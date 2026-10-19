@@ -18,6 +18,7 @@ final class ApiHeaders
         }
         $response->headers->set('X-Content-Type-Options', 'nosniff');
         $response->headers->set('Cache-Control', 'no-store');
+        $response->headers->set('X-Business-Date', today_nl());
         if (app()->isProduction()) {
             $response->headers->set('Strict-Transport-Security', 'max-age=31536000');
         }

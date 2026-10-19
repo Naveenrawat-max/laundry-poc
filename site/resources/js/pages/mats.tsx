@@ -1,6 +1,6 @@
 /** The mat list: every mat, where it is now, and behind each row everything that ever happened to it. */
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 
 import { Empty, Fact, FormDialog, Load, PageHead, StatusChip, Toolbar } from '@/app/ui'
 import { Alert } from '@/components/ui/alert'
@@ -13,9 +13,9 @@ import { Select } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { useAction, useLoad } from '@/lib/hooks'
-import { EVENT, HELD, PLACES, STATUS, STATUSES, day, when } from '@/lib/labels'
+import { EVENT, HELD, PLACES, STATUS, STATUSES, day, today, when } from '@/lib/labels'
 import { useSession } from '@/lib/session'
-import type { Building, Customer, ItemType, MatEvent, OfficeMat, Status, User, Zone } from '@/lib/types'
+import type { Building, Category, Customer, ItemType, MatEvent, OfficeMat, Status, User, Zone } from '@/lib/types'
 
 type Page = { items: OfficeMat[]; page: number; per_page: number; total: number }
 
@@ -53,12 +53,13 @@ export function MatsPage() {
 
   const mats = useLoad(() => api.get<Page>(`/items?${params.toString()}`), [api, params.toString()])
   const types = useLoad(() => api.get<{ rows: ItemType[] }>('/item-types').then((r) => r.rows), [api])
+  const categories = useLoad(() => api.get<{ rows: Category[] }>('/categories').then((r) => r.rows), [api])
   const [openId, setOpenId] = useState<number | null>(null)
 
   return (
     <>
       <PageHead title="Mats">
-        Every mat, where it is now, and <span className="highlight">every scan it ever had</span>. Open a row to see its history.
+        Current location, delivery dates and wash history. Open a mat for tags and full details.
       </PageHead>
 
       <Toolbar
@@ -70,7 +71,7 @@ export function MatsPage() {
           )
         }
       >
-        <SearchInput aria-label="Search by SKU or tag id" placeholder="SKU or tag id" value={q} onChange={(e) => setQ(e.target.value)} />
+        <SearchInput aria-label="Search by product SKU, mat ID or tag ID" placeholder="Search mats or tags" value={q} onChange={(e) => setQ(e.target.value)} />
         <Select aria-label="Status" value={status} onChange={(e) => change({ status: e.target.value })}>
           <option value="">Every status</option>
           {/* A place is several statuses at once: the API takes them with commas between. */}
@@ -90,10 +91,10 @@ export function MatsPage() {
           </optgroup>
         </Select>
         <Select aria-label="Mat type" value={type} onChange={(e) => change({ type: e.target.value })}>
-          <option value="">Every type</option>
+          <option value="">Every mat type</option>
           {types.data?.map((t) => (
             <option key={t.id} value={t.id}>
-              {t.name}
+              {categories.data?.find((c) => c.id === t.category_id)?.name ?? 'Unassigned'} → {t.name}
             </option>
           ))}
         </Select>
@@ -102,37 +103,48 @@ export function MatsPage() {
       <Load state={mats} rows={8}>
         {(data) =>
           data.items.length === 0 ? (
-            <Empty>No mat matches. Mats are registered on the inventory manager's handheld.</Empty>
+            <Empty>No mat matches. <Link to="/registration" className="underline">Map a stock mat in Registration</Link> to make it ready to deliver.</Empty>
           ) : (
             <>
-              <Table>
+              <Table className="min-w-[52rem] table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>SKU</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Where</TableHead>
-                    <TableHead className="text-right">Washes</TableHead>
-                    <TableHead>Last wash</TableHead>
+                    <TableHead className="w-[26%]">Mat</TableHead>
+                    <TableHead className="w-[17%]">Status</TableHead>
+                    <TableHead className="w-[22%]">Location</TableHead>
+                    <TableHead className="w-[21%]">Delivery / swap</TableHead>
+                    <TableHead className="w-[14%]">Washing</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.items.map((m) => (
-                    <TableRow key={m.id} className="cursor-pointer" onClick={() => setOpenId(m.id)}>
-                      <TableCell>
-                        <button type="button" className="cursor-pointer font-mono text-xs font-medium whitespace-nowrap outline-none hover:text-brand focus-visible:underline" onClick={() => setOpenId(m.id)}>
-                          {m.sku}
-                        </button>
-                      </TableCell>
-                      <TableCell>{m.type}</TableCell>
-                      <TableCell>
-                        <StatusChip status={m.status} />
-                      </TableCell>
-                      <TableCell className="max-w-64 truncate">{where(m)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{m.wash_count}</TableCell>
-                      <TableCell className="whitespace-nowrap">{day(m.current_wash_date) || <span className="text-muted-foreground">Never</span>}</TableCell>
-                    </TableRow>
-                  ))}
+                  {data.items.map((m) => {
+                    const product = [m.type, m.width_cm && m.height_cm ? `${m.width_cm} × ${m.height_cm} cm` : null, m.color].filter(Boolean).join(' · ')
+                    const overdue = m.status === 'at_customer' && Boolean(m.swap_due_date && m.swap_due_date < today())
+                    return (
+                      <TableRow key={m.id} className="cursor-pointer" onClick={() => setOpenId(m.id)}>
+                        <TableCell>
+                          <button type="button" title={m.sku} className="block max-w-full cursor-pointer truncate text-left font-mono text-xs font-medium outline-none hover:text-brand focus-visible:underline" onClick={() => setOpenId(m.id)}>
+                            {m.sku}
+                          </button>
+                          <span className="block truncate text-xs text-muted-foreground" title={product}>
+                            {product}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <StatusChip status={m.status} />
+                        </TableCell>
+                        <TableCell><span className="block truncate" title={where(m)}>{where(m)}</span></TableCell>
+                        <TableCell className="whitespace-nowrap text-xs">
+                          <span className="block text-muted-foreground" title={m.delivered_on ? undefined : 'No recorded delivery date'}>{m.status === 'at_customer' ? 'Delivered' : 'Last delivery'} {day(m.delivered_on) || '—'}</span>
+                          <span className={`block ${overdue ? 'font-medium text-destructive' : ''}`} title={overdue ? 'Overdue' : m.swap_due_date ? undefined : 'No recorded swap date'}>{m.status === 'at_customer' ? 'Swap due' : 'Last swap due'} {day(m.swap_due_date) || '—'}{overdue && <span className="sr-only"> · Overdue</span>}</span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="block tabular-nums">{m.wash_count} {m.wash_count === 1 ? 'wash' : 'washes'}</span>
+                          <span className="block whitespace-nowrap text-xs text-muted-foreground">{day(m.current_wash_date) || 'No wash date'}</span>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
               <Pagination className="mt-4 justify-center" page={data.page} total={Math.ceil(data.total / data.per_page)} onChange={(p) => change({ page: String(p) })} />
@@ -167,17 +179,25 @@ function MatDrawer({ id, onClose, onChanged }: { id: number | null; onClose: () 
                 </Button>
               </div>
               <dl className="grid grid-cols-2 gap-3">
+                <Fact label="Mat ID"><span className="block break-all whitespace-normal">{mat.sku}</span></Fact>
+                <Fact label="Product SKU"><span className="block break-all whitespace-normal">{mat.catalog_sku_code ?? 'Unassigned'}</span></Fact>
+                <Fact label="Mat type"><span className="block whitespace-normal">{mat.type}</span></Fact>
+                <Fact label="Product"><span className="block whitespace-normal">{mat.catalog_sku_label ?? 'Unassigned'}</span></Fact>
+                <Fact label="Location"><span className="block whitespace-normal">{where(mat)}</span></Fact>
+                <Fact label="Size / colour"><span className="block whitespace-normal">{[mat.width_cm && mat.height_cm ? `${mat.width_cm} × ${mat.height_cm} cm` : null, mat.color].filter(Boolean).join(' · ') || 'Not recorded'}</span></Fact>
+                <Fact label={mat.status === 'at_customer' ? 'Delivered' : 'Last delivery'}>{day(mat.delivered_on) || 'No recorded date'}</Fact>
+                <Fact label={mat.status === 'at_customer' ? 'Swap due' : 'Last swap due'}>{day(mat.swap_due_date) || 'No recorded date'}</Fact>
                 <Fact label="Washes">{String(mat.wash_count)}</Fact>
                 <Fact label="Last wash">{day(mat.current_wash_date)}</Fact>
                 <Fact label="Wash before that">{day(mat.previous_wash_date)}</Fact>
                 <Fact label="Tag id (EPC)">
-                  <span className="font-mono text-xs">{mat.epc}</span>
+                  <span className="block break-all font-mono text-xs whitespace-normal">{mat.epc}</span>
                 </Fact>
                 <Fact label="First tag (TID)">
-                  <span className="font-mono text-xs">{mat.tid_primary}</span>
+                  <span className="block break-all font-mono text-xs whitespace-normal">{mat.tid_primary}</span>
                 </Fact>
                 <Fact label="Second tag (TID)">
-                  <span className="font-mono text-xs">{mat.tid_secondary}</span>
+                  <span className="block break-all font-mono text-xs whitespace-normal">{mat.tid_secondary}</span>
                 </Fact>
               </dl>
 
@@ -306,7 +326,7 @@ function CorrectDialog({ mat, onClose, onDone }: { mat: OfficeMat | null; onClos
                 ))}
               </Select>
             </Field>
-            <Field label="Building">
+            <Field label="Location">
               <Select
                 value={buildingId}
                 onChange={(e) => {

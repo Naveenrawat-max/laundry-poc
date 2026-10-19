@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { message } from '@/lib/api'
 
-export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => Promise<void> }
+export type Loaded<T> = { data: T | null; error: string | null; loading: boolean; reload: () => Promise<void>; adopt: (next: T) => void }
 
 /**
  * Runs `load` when `deps` change, and every `everyMs` when given. The hosting has no push,
@@ -31,6 +31,20 @@ export function useLoad<T>(load: () => Promise<T>, deps: unknown[], everyMs?: nu
     }
   }, [])
 
+  /** Show this answer now and ignore any refresh that started before it. */
+  const adopt = useCallback((next: T) => {
+    run.current += 1
+    setData(next)
+    setError(null)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    const refresh = () => { void reload() }
+    window.addEventListener('proti:business-date', refresh)
+    return () => window.removeEventListener('proti:business-date', refresh)
+  }, [reload])
+
   useEffect(() => {
     setLoading(true)
     setData(null) // what is on screen answered another question (another customer, another filter)
@@ -51,7 +65,7 @@ export function useLoad<T>(load: () => Promise<T>, deps: unknown[], everyMs?: nu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, everyMs, reload])
 
-  return { data, error, loading, reload }
+  return { data, error, loading, reload, adopt }
 }
 
 /** Runs one action (a save, a scan) and keeps its busy flag and its error. */

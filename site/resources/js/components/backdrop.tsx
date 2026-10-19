@@ -1,3 +1,4 @@
+import { appBase } from '@/lib/base'
 import { cn } from '@/lib/utils'
 
 /**
@@ -12,7 +13,7 @@ import { cn } from '@/lib/utils'
  * - The chaiui style makes its parent `isolation: isolate`, so the negative
  *   z-index stays above an opaque page wrapper instead of sinking behind it.
  */
-export function Backdrop({ src = '/chaiui/background.svg', className }: { src?: string; className?: string }) {
+export function Backdrop({ src = `${appBase()}/chaiui/background.svg`, className }: { src?: string; className?: string }) {
   return (
     <img
       data-chai-backdrop=""

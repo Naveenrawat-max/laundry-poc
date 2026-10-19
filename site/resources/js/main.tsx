@@ -7,6 +7,7 @@ import { Shell } from '@/app/shell'
 import { ThemeProvider } from '@/components/theme-provider'
 import { Spinner } from '@/components/ui/spinner'
 import { ToastProvider } from '@/components/ui/toast'
+import { appBase } from '@/lib/base'
 import { SessionProvider, useSession } from '@/lib/session'
 import { ContractsPage } from '@/pages/contracts'
 import { CustomersPage } from '@/pages/customers'
@@ -15,6 +16,8 @@ import { HandheldPage, OwnHandheldPage } from '@/pages/handheld'
 import { HandoversPage } from '@/pages/handovers'
 import { LoginPage } from '@/pages/login'
 import { MatsPage } from '@/pages/mats'
+import { OrdersPage } from '@/pages/orders'
+import { RegistrationPage } from '@/pages/register'
 import { SetupPage } from '@/pages/setup'
 import { TasksPage } from '@/pages/tasks'
 import { UsersPage } from '@/pages/users'
@@ -40,6 +43,9 @@ function App() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/tasks" element={<TasksPage />} />
         <Route path="/mats" element={<MatsPage />} />
+        <Route path="/registration" element={<RegistrationPage />} />
+        <Route path="/ready-to-use" element={<OrdersPage key="delivery" type="delivery" />} />
+        <Route path="/pickup-orders" element={<OrdersPage key="pickup" type="pickup" />} />
         <Route path="/handovers" element={<HandoversPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/contracts" element={<ContractsPage />} />
@@ -57,7 +63,7 @@ createRoot(document.getElementById('app')!).render(
     <ThemeProvider>
       <ToastProvider>
         <SessionProvider>
-          <BrowserRouter>
+          <BrowserRouter basename={appBase() || '/'}>
             <App />
           </BrowserRouter>
         </SessionProvider>

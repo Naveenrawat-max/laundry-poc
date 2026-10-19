@@ -1,3 +1,32 @@
 /composer.phar
-/.env.testing.keep
 /.superpowers/
+
+# Local configuration and credentials
+.env*
+!.env.example
+auth.json
+*.key
+*.pem
+
+# Local database copies, deployment packages, and audit artifacts
+/database/
+/deploy/
+/docs/deploy-transip-proti.md
+/NOTES.md
+/.qa/
+/.playwright-mcp/
+*.dump
+*.sql.gz
+*.sql.zip
+*.sqlite
+*.sqlite3
+*.bak
+
+# Runtime output and personal editor state
+*.log
+__pycache__/
+*.pyc
+.cache/
+coverage/
+.obsidian/workspace*.json
+.obsidian/cache/

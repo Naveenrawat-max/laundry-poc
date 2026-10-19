@@ -11,7 +11,7 @@ final class ContractsTest extends ApiTestCase
 {
     private function newContract(array $over = []): array
     {
-        return $over + ['customer_id' => 1, 'swap_interval_days' => 7, 'start_date' => '2026-11-01',
+        return $over + ['customer_id' => 1, 'building_id' => 1, 'swap_interval_days' => 7, 'start_date' => '2026-11-01',
             'lines' => [['zone_id' => 1, 'item_type_id' => 1, 'quantity' => 2], ['zone_id' => 2, 'item_type_id' => 3, 'quantity' => 1]]];
     }
 

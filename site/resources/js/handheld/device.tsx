@@ -1,5 +1,5 @@
 /** One handheld: the frame that looks like the device, its login, and the screens the logged-in role gets. */
-import { ArrowLeft, ArrowRightLeft, Boxes, CheckCheck, ChevronRight, ClipboardCheck, Droplets, Inbox, ListChecks, LogOut, type LucideIcon, Search, Tag, Truck, Undo2 } from 'lucide-react'
+import { ArrowLeft, ArrowRightLeft, Boxes, ChevronRight, ClipboardCheck, Droplets, Inbox, ListChecks, LogOut, type LucideIcon, Search, Truck, Undo2 } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Alert } from '@/components/ui/alert'
@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
-import { type Ctx, GiveScreen, MatListScreen, NeedsScreen, QcScreen, ReceiveScreen, RegisterScreen, ScanScreen } from '@/handheld/screens'
+import { OrderNotice, OrderReturnsScreen, OrderTasksScreen } from '@/handheld/orders'
+import { type Ctx, GiveScreen, MatListScreen, NeedsScreen, ReceiveScreen, ScanScreen } from '@/handheld/screens'
 import { TasksScreen } from '@/handheld/stop'
 import { type Api, createApi } from '@/lib/api'
 import { useAction } from '@/lib/hooks'
@@ -30,32 +31,27 @@ const lookup: Screen = {
 /** The screens per role, in the order of the working day. Hiding a screen is not the protection: the server checks every call. */
 const SCREENS: Record<ScannerRole, Screen[]> = {
   inventory: [
-    { id: 'register', title: 'Register', hint: 'Tag a new mat', icon: Tag, render: (c) => <RegisterScreen {...c} /> },
-    {
-      id: 'ready',
-      title: 'Ready to use',
-      hint: 'Release new or repaired mats',
-      icon: CheckCheck,
-      render: ({ api }) => <ScanScreen api={api} path="/items/ready" fits={['registered', 'repair']} intro="Scan the mats that are ready. They then wait for their quality check." scanLabel="Mark ready" />,
-    },
-    { id: 'qc', title: 'Quality check', hint: 'Pass, rewash, repair or scrap', icon: ClipboardCheck, render: (c) => <QcScreen {...c} /> },
+    { id: 'qc', title: 'Quality check', hint: 'Check delivery orders and mats received back from drivers', icon: ClipboardCheck, render: (c) => <OrderTasksScreen {...c} mode="qc" /> },
+    { id: 'receive-pickups', title: 'Receive pickups', hint: 'Customer pickups sent directly to inventory', icon: Inbox, render: (c) => <OrderTasksScreen {...c} mode="inventory-receive" /> },
     { id: 'needs', title: 'What drivers need', hint: 'Mats still to hand out', icon: ListChecks, render: (c) => <NeedsScreen {...c} /> },
     { id: 'give-driver', title: 'Hand over to driver', hint: 'Handover A, scan out', icon: Truck, render: (c) => <GiveScreen {...c} type="inventory_to_driver" /> },
-    { id: 'receive-washing', title: 'Receive from washing', hint: 'Handover C, optional scan in', icon: Inbox, render: (c) => <ReceiveScreen {...c} types={['washing_to_inventory']} /> },
-    { id: 'receive-returns', title: 'Receive returns', hint: 'Refused mats from a driver', icon: Undo2, render: (c) => <ReceiveScreen {...c} types={['driver_to_inventory']} /> },
+    { id: 'receive-washing', title: 'Receive from washing', hint: 'Acknowledge clean mats handed back by washing', icon: Inbox, render: (c) => <ReceiveScreen {...c} types={['washing_to_inventory']} /> },
+    { id: 'receive-returns', title: 'Receive returns', hint: 'Scan refused order mats in from a driver', icon: Undo2, render: (c) => <ReceiveScreen {...c} types={['driver_to_inventory']} /> },
     { id: 'give-washing', title: 'Send to rewash', hint: 'Mats that failed the check', icon: Droplets, render: (c) => <GiveScreen {...c} type="inventory_to_washing" /> },
     { id: 'mats', title: 'Mats in inventory', hint: 'Everything on the shelf', icon: Boxes, render: (c) => <MatListScreen {...c} empty="No mats in inventory." /> },
     lookup,
   ],
   driver: [
-    { id: 'tasks', title: 'My tasks', hint: 'Deliver, swap, collect', icon: ListChecks, render: (c) => <TasksScreen {...c} /> },
+    { id: 'tasks', title: 'My tasks', hint: 'Delivery and pickup order checklists', icon: ListChecks, render: (c) => <OrderTasksScreen {...c} mode="driver" /> },
+    { id: 'contract-tasks', title: 'Contract tasks', hint: 'Existing scheduled swaps and collections', icon: ListChecks, render: (c) => <TasksScreen {...c} /> },
     { id: 'load', title: 'Load the van', hint: 'Handover A, scan in', icon: Inbox, render: (c) => <ReceiveScreen {...c} types={['inventory_to_driver']} /> },
     { id: 'give-washing', title: 'Hand over to washing', hint: 'Handover B, scan out', icon: Droplets, render: (c) => <GiveScreen {...c} type="driver_to_washing" /> },
-    { id: 'give-returns', title: 'Return refused mats', hint: 'Back to inventory, no wash', icon: Undo2, render: (c) => <GiveScreen {...c} type="driver_to_inventory" /> },
+    { id: 'give-returns', title: 'Return refused mats', hint: 'Order return: scan out to inventory', icon: Undo2, render: (c) => <OrderReturnsScreen {...c} /> },
     { id: 'mats', title: 'On my van', hint: 'The mats I carry', icon: Boxes, render: (c) => <MatListScreen {...c} empty="Your van is empty." /> },
     lookup,
   ],
   washing: [
+    { id: 'incoming-orders', title: 'Incoming deliveries', hint: 'Receive by driver, wash and return to inventory', icon: Truck, render: (c) => <OrderTasksScreen {...c} mode="washing" /> },
     { id: 'receive', title: 'Receive', hint: 'Handover B and rewash, scan in', icon: Inbox, render: (c) => <ReceiveScreen {...c} types={['driver_to_washing', 'inventory_to_washing']} /> },
     { id: 'mats', title: 'In washing', hint: 'Mats in the washing house', icon: Boxes, render: (c) => <MatListScreen {...c} empty="Nothing is in washing." /> },
     { id: 'give-inventory', title: 'Hand over to inventory', hint: 'Handover C, counts the wash', icon: ArrowRightLeft, render: (c) => <GiveScreen {...c} type="washing_to_inventory" /> },
@@ -76,10 +72,9 @@ export function DeviceFrame({ children, className }: { children: ReactNode; clas
     return () => window.clearInterval(timer)
   }, [])
   return (
-    <div className={cn('flex h-[700px] w-[320px] shrink-0 flex-col overflow-hidden rounded-[2rem] border border-card-edge-hover bg-background', className)}>
+    <div className={cn('flex h-[560px] w-[320px] shrink-0 flex-col overflow-hidden rounded-[2rem] border border-card-edge-hover bg-background', className)}>
       <div className="flex shrink-0 items-center justify-between px-5 pt-2.5 pb-1 font-mono text-[10px] text-muted-foreground">
         <span>{clock.toLocaleTimeString('en-GB', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit' })}</span>
-        <span>C72 simulated</span>
       </div>
       {children}
     </div>
@@ -110,6 +105,7 @@ export function Handheld({ api, user, onLogout }: Ctx & { onLogout: () => void }
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+        {!screen && user.role !== 'outbound' && <OrderNotice api={api} user={user} />}
         {screen ? (
           // The key gives every screen a fresh start when the driver comes back to it.
           <div key={screen.id} className="flex flex-col gap-3">

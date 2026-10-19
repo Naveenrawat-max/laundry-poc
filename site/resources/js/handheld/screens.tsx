@@ -1,4 +1,4 @@
-/** The handheld's screens that every scanning role shares: scan a pile, check quality, register, give and receive a handover. */
+/** The handheld's screens that every scanning role shares: scan a pile, give and receive a handover. */
 import { Check, Minus } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
@@ -6,15 +6,13 @@ import { Empty, StatusChip } from '@/app/ui'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Textarea } from '@/components/ui/textarea'
 import { PilePanel, ScanResults } from '@/handheld/pile'
 import type { Api } from '@/lib/api'
 import { useAction, useLoad } from '@/lib/hooks'
 import { HANDOVER, STATUS, day } from '@/lib/labels'
-import type { DriverNeeds, Handover, HandoverRow, HandoverType, ItemType, Mat, ScanAnswer, Status, User } from '@/lib/types'
+import type { DriverNeeds, Handover, HandoverRow, HandoverType, Mat, ScanAnswer, Status, User } from '@/lib/types'
 
 export type Ctx = { api: Api; user: User }
 
@@ -45,178 +43,12 @@ export function ScanScreen({ api, path, fits, intro, scanLabel }: { api: Api; pa
   )
 }
 
-const QC = [
-  { result: 'pass', label: 'Pass' },
-  { result: 'rewash', label: 'Rewash' },
-  { result: 'repair', label: 'Repair' },
-  { result: 'scrap', label: 'Scrap' },
-] as const
-
-/** The quality check: one mat at a time. A mat that fails goes to rewash, repair or scrap, with a note. */
-export function QcScreen({ api }: Ctx) {
-  const [epc, setEpc] = useState<string | null>(null)
-  const [mat, setMat] = useState<Mat | null>(null)
-  const [note, setNote] = useState('')
-  const [answer, setAnswer] = useState<ScanAnswer | null>(null)
-  const judge = useAction()
-
-  if (epc && mat) {
-    return (
-      <>
-        <div className="card-chai flex items-center justify-between gap-2 p-3">
-          <div>
-            <p className="font-mono text-sm font-medium">{mat.sku}</p>
-            <p className="text-xs text-muted-foreground">
-              {mat.type}. Washed {mat.wash_count} times.
-            </p>
-          </div>
-          <StatusChip status={mat.status} />
-        </div>
-        <Field label="Note" aside="For a mat that fails">
-          <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} rows={2} placeholder="What is wrong with it" />
-        </Field>
-        {judge.error && <Alert tone="danger">{judge.error}</Alert>}
-        <div className="grid grid-cols-2 gap-2">
-          {QC.map((q) => (
-            <Button
-              key={q.result}
-              variant={q.result === 'pass' ? 'solid' : 'soft'}
-              iconRight={null}
-              disabled={judge.busy}
-              onClick={() =>
-                void judge.run(async () => {
-                  setAnswer(await api.post<ScanAnswer>('/items/qc', { source: 'simulator', epc, result: q.result, note: note || null }))
-                  setEpc(null)
-                  setNote('')
-                })
-              }
-            >
-              {q.label}
-            </Button>
-          ))}
-        </div>
-        <Button variant="ghost" onClick={() => setEpc(null)}>
-          Scan another mat
-        </Button>
-      </>
-    )
-  }
-
-  return (
-    <>
-      <Hint>Scan one mat, look at it, and say what you see. Only a mat that passes may go out to a customer.</Hint>
-      <PilePanel
-        api={api}
-        fits={['ready']}
-        single
-        scanLabel="Scan this mat"
-        onScan={async ([one]) => {
-          const found = (await api.post<ScanAnswer>('/scan/lookup', reads([one]))).results[0]
-          setAnswer(found.item ? null : { results: [found], missing: [] })
-          setMat(found.item)
-          setEpc(found.item ? one : null)
-        }}
-      />
-      <ScanResults answer={answer} />
-    </>
-  )
-}
-
-const hex = (length: number) => Array.from(crypto.getRandomValues(new Uint8Array(length / 2)), (b) => b.toString(16).padStart(2, '0')).join('').toUpperCase()
-
-/** Two fresh tags, as if the handheld just read them. Every mock tag id starts with "MOCK" in hex. */
-function newTags() {
-  const tail = hex(12)
-  return { epc: `4D4F434B0000${tail}`, tid_primary: `4D4F434B000A${tail}`, tid_secondary: `4D4F434B000B${tail}`, sku: `MOCK-${1000 + (parseInt(tail.slice(-4), 16) % 9000)}` }
-}
-
-/** Register a new mat: two tags with the same EPC, one TID as primary and one as secondary, and the SKU. */
-export function RegisterScreen({ api }: Ctx) {
-  const types = useLoad(() => api.get<{ rows: ItemType[] }>('/item-types').then((r) => r.rows.filter((t) => t.is_active)), [api])
-  const [tags, setTags] = useState<ReturnType<typeof newTags> | null>(null)
-  const [sku, setSku] = useState('')
-  const [typeId, setTypeId] = useState('')
-  const [done, setDone] = useState<Mat | null>(null)
-  const save = useAction()
-
-  useEffect(() => {
-    if (!typeId && types.data?.[0]) setTypeId(String(types.data[0].id))
-  }, [types.data, typeId])
-
-  return (
-    <>
-      <Hint>A new mat gets two tags. Read both, give the mat its number, and save.</Hint>
-      {done && (
-        <Alert tone="success" title={`${done.sku} is registered`}>
-          Mark it ready to use before its quality check.
-        </Alert>
-      )}
-      <Button
-        variant={tags ? 'soft' : 'solid'}
-        iconRight={null}
-        onClick={() => {
-          const fresh = newTags()
-          setTags(fresh)
-          setSku(fresh.sku)
-          setDone(null)
-        }}
-      >
-        {tags ? 'Read two other tags' : 'Read the two tags'}
-      </Button>
-      {tags && (
-        <form
-          className="space-y-3"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void save.run(async () => {
-              const out = await api.post<{ item: Mat }>('/items', { source: 'simulator', epc: tags.epc, tid_primary: tags.tid_primary, tid_secondary: tags.tid_secondary, sku, item_type_id: Number(typeId) })
-              setDone(out.item)
-              setTags(null)
-            })
-          }}
-        >
-          <dl className="card-chai space-y-1.5 p-3 font-mono text-[11px] break-all">
-            <div>
-              <dt className="font-sans text-muted-foreground">Tag id on both tags</dt>
-              <dd>{tags.epc}</dd>
-            </div>
-            <div>
-              <dt className="font-sans text-muted-foreground">First tag</dt>
-              <dd>{tags.tid_primary}</dd>
-            </div>
-            <div>
-              <dt className="font-sans text-muted-foreground">Second tag</dt>
-              <dd>{tags.tid_secondary}</dd>
-            </div>
-          </dl>
-          <Field label="Mat number (SKU)">
-            <Input value={sku} onChange={(e) => setSku(e.target.value)} maxLength={64} required />
-          </Field>
-          <Field label="Mat type">
-            <Select value={typeId} onChange={(e) => setTypeId(e.target.value)} wrapperClassName="w-full" required>
-              {types.data?.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          {save.error && <Alert tone="danger">{save.error}</Alert>}
-          <Button type="submit" variant="solid" iconRight={null} className="w-full" disabled={save.busy}>
-            {save.busy ? 'Saving' : 'Register mat'}
-          </Button>
-        </form>
-      )}
-    </>
-  )
-}
-
 function Tick({ on }: { on: boolean }) {
   return on ? <Check className="size-4 text-green-700 dark:text-green-400" aria-label="Scanned" /> : <Minus className="size-4 text-muted-foreground" aria-label="Not scanned" />
 }
 
 /** One open handover, live: its pile with both scans, the scanner, and the button that closes it. */
-function HandoverLive({ api, id, side, onLeave }: { api: Api; id: number; side: 'give' | 'receive'; onLeave: () => void }) {
+export function HandoverLive({ api, id, side, onLeave }: { api: Api; id: number; side: 'give' | 'receive'; onLeave: () => void }) {
   // No push on the hosting, so the other side's scans arrive by asking again every few seconds.
   const state = useLoad(() => api.get<{ handover: Handover }>(`/handovers/${id}`).then((r) => r.handover), [api, id], 3000)
   const [answer, setAnswer] = useState<ScanAnswer | null>(null)
@@ -228,6 +60,7 @@ function HandoverLive({ api, id, side, onLeave }: { api: Api; id: number; side: 
   const other = side === 'give' ? h.receiver.name : h.giver.name
   const mayClose = side === 'receive' || !rule.twoSided
   const moved = h.items.filter((i) => i.given_at && (i.received_at || !rule.twoSided)).length
+  const pendingReceipt = h.type === 'washing_to_inventory' && h.pending_receipt
 
   return (
     <>
@@ -235,8 +68,9 @@ function HandoverLive({ api, id, side, onLeave }: { api: Api; id: number; side: 
         <p className="font-montserrat text-sm font-semibold">
           {HANDOVER[h.type].name} {side === 'give' ? 'to' : 'from'} {other}
         </p>
+        {h.order_number && <p className="mt-1 font-mono text-xs font-medium">Order {h.order_number}</p>}
         <p className="text-xs text-muted-foreground">
-          {h.status === 'closed' ? 'Closed.' : rule.twoSided ? 'A mat moves the moment both of you have scanned it.' : 'A mat is ready the moment you scan it out. The other scan is optional.'} {moved} of{' '}
+          {h.status === 'closed' ? `Closed.${pendingReceipt ? ' Inventory receipt pending.' : ''}` : rule.twoSided ? 'A mat moves the moment both of you have scanned it.' : 'A mat is ready the moment you scan it out. The other scan is optional.'} {moved} of{' '}
           {h.items.length} moved.
         </p>
         {h.items.length > 0 && (
@@ -265,12 +99,12 @@ function HandoverLive({ api, id, side, onLeave }: { api: Api; id: number; side: 
         )}
       </div>
 
-      {h.status === 'open' ? (
+      {h.status === 'open' || (side === 'receive' && pendingReceipt) ? (
         <>
           <PilePanel
             api={api}
             fits={side === 'give' ? [rule.from] : undefined}
-            expected={side === 'receive' ? h.items.filter((i) => i.given_at).map((i) => i.sku) : undefined}
+            expected={side === 'receive' && h.type === 'washing_to_inventory' ? h.items.filter((i) => i.receivable).map((i) => i.sku) : h.order_id ? h.items.filter((i) => side === 'give' || i.given_at).map((i) => i.sku) : side === 'receive' ? h.items.filter((i) => i.given_at).map((i) => i.sku) : undefined}
             scanLabel={side === 'give' ? 'Scan out' : 'Scan in'}
             onScan={async (epcs) => {
               setAnswer(await api.post<ScanAnswer>(`/handovers/${id}/scan`, reads(epcs)))
@@ -279,7 +113,7 @@ function HandoverLive({ api, id, side, onLeave }: { api: Api; id: number; side: 
           />
           <ScanResults answer={answer} />
           {close.error && <Alert tone="danger">{close.error}</Alert>}
-          {mayClose ? (
+          {h.order_id && rule.twoSided ? <Hint>Both people must scan every listed mat. The order updates automatically after the final receipt.</Hint> : h.status === 'open' && mayClose ? (
             <Button
               disabled={close.busy}
               onClick={() =>
@@ -291,15 +125,16 @@ function HandoverLive({ api, id, side, onLeave }: { api: Api; id: number; side: 
             >
               {close.busy ? 'Closing' : 'Done, close the handover'}
             </Button>
-          ) : (
+          ) : h.status === 'open' ? (
             <Hint>{other} closes this handover after scanning in. A mat only you scanned stays with you and is flagged for the office.</Hint>
-          )}
+          ) : <><Hint>The wash was counted when washing scanned out. Scan receipt to acknowledge the mats without adding another wash.</Hint><Button onClick={onLeave}>Back</Button></>}
         </>
       ) : (
         <>
           <Alert tone="success" title="Handover closed">
             {moved} {moved === 1 ? 'mat' : 'mats'} changed hands.
             {h.items.length > moved ? ` ${h.items.length - moved} had only one scan and went to the office as issues.` : ''}
+            {pendingReceipt ? ' Inventory can still acknowledge receipt from Receive from washing.' : ''}
           </Alert>
           <Button onClick={onLeave}>Back</Button>
         </>
@@ -391,7 +226,7 @@ export function GiveScreen({ api, user, type }: Ctx & { type: HandoverType }) {
 
 /** Receive a pile: the open handovers waiting for this person, then scan the mats in. */
 export function ReceiveScreen({ api, user, types }: Ctx & { types: HandoverType[] }) {
-  const waiting = useLoad(() => api.get<{ handovers: HandoverRow[] }>('/handovers').then((r) => r.handovers.filter((h) => h.status === 'open' && h.receiver_id === user.id && types.includes(h.type))), [api, user.id, types.join()], 4000)
+  const waiting = useLoad(() => api.get<{ handovers: HandoverRow[] }>('/handovers').then((r) => r.handovers.filter((h) => (h.status === 'open' || (h.type === 'washing_to_inventory' && h.pending_receipt)) && h.receiver_id === user.id && types.includes(h.type))), [api, user.id, types.join()], 4000)
   const [id, setId] = useState<number | null>(null)
 
   if (id !== null) {
@@ -423,11 +258,12 @@ export function ReceiveScreen({ api, user, types }: Ctx & { types: HandoverType[
                   <span className="block font-montserrat text-sm font-semibold">
                     {HANDOVER[h.type].name} from {h.giver_name}
                   </span>
+                  {h.order_number && <span className="block font-mono text-xs">Order {h.order_number}</span>}
                   <span className="block text-xs text-muted-foreground">
                     {h.given} given, {h.received} received
                   </span>
                 </span>
-                <span className="text-xs text-muted-foreground">Open</span>
+                <span className="text-xs text-muted-foreground">{h.status === 'closed' ? 'Awaiting receipt' : 'Open'}</span>
               </button>
             </li>
           ))}

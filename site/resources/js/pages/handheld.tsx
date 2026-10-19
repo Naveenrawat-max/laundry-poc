@@ -17,7 +17,7 @@ const MODES = [
 ] as const
 
 const NOTE: Record<ScannerRole, string> = {
-  inventory: 'Tags, checks and hands mats to the driver',
+  inventory: 'Checks delivery orders and hands passed mats to the driver',
   driver: 'Loads, delivers, swaps and brings mats to washing',
   washing: 'Receives used mats and sends washed ones back',
   outbound: 'Only scans mats out to the driver',

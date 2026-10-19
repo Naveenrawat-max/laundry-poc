@@ -22,7 +22,7 @@ final class RefdataTest extends ApiTestCase
         $this->assertTrue($zone['is_active']);
         $this->assertSame(['HQ'],
             array_column($this->ok($this->api('GET', "/customers/{$customer['id']}/buildings"))['rows'], 'name'));
-        $this->assertSame(['Lobby'],
+        $this->assertSame(['Lobby', 'Main area'],
             array_column($this->ok($this->api('GET', "/buildings/{$building['id']}/zones"))['rows'], 'name'));
     }
 
